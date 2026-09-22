@@ -1222,6 +1222,312 @@ function lastBuyBlock(product, lastPurchase, trend) {
       : null);
 }
 
+/* ---------- 견적함 · 업체별 견적 비교 ---------------------------------------
+   자재는 한 번에 여러 품목을 삽니다. 품목마다 최저가를 찾아 봐야 "어디에
+   주문할 것인가" 에는 답이 안 나옵니다 — 배송비는 주문마다 붙고, 한 업체가
+   세 품목 중 둘만 팔면 나머지는 따로 시켜야 하기 때문입니다.
+   그래서 "한 곳에 몰아주면 얼마" 와 "쪼개 사면 얼마" 를 나란히 놓습니다. */
+
+/** 어느 화면에서든 제품을 견적함에 담습니다. 담을 곳이 없으면 그 자리에서 만듭니다. */
+async function addToQuote(product, quantity) {
+  const carts = (await api("/api/quotes")).filter((cart) => cart.status === "작성중");
+  const pick = carts[0] || await api("/api/quotes", { method: "POST", body: { title: `견적 ${today()}` } });
+  await api(`/api/quotes/${encodeURIComponent(pick.id)}/items`, {
+    method: "POST",
+    body: { productId: product.id, quantity: quantity || 1 },
+  });
+  return pick;
+}
+
+const cartStatusTone = (status) => ({ 작성중: "warn", 발주완료: "solid", 보관: "mid" }[status] || "mid");
+const leadText = (days) => (days === null || days === undefined ? "-" : days === 0 ? "당일" : `${days}일`);
+
+function quoteScreen() {
+  const state = { cartId: null, carts: [], items: [], compare: null, expanded: new Set() };
+  const side = h("div.quote-side");
+  const main = h("div.quote-main");
+
+  async function refresh() {
+    state.carts = await api("/api/quotes");
+    if (!state.carts.some((cart) => cart.id === state.cartId)) {
+      state.cartId = state.carts.find((cart) => cart.status === "작성중")?.id || state.carts[0]?.id || null;
+    }
+    if (state.cartId) {
+      const [detail, compare] = await Promise.all([
+        api(`/api/quotes/${encodeURIComponent(state.cartId)}`),
+        api(`/api/quotes/${encodeURIComponent(state.cartId)}/compare`),
+      ]);
+      state.items = detail.items;
+      state.compare = compare;
+    } else {
+      state.items = [];
+      state.compare = null;
+    }
+    draw();
+  }
+
+  async function newCart() {
+    const result = await openForm({
+      title: "견적함 만들기",
+      fields: [
+        { key: "title", label: "이름", required: true, value: `견적 ${today()}`, placeholder: "예: 3층 배관 자재" },
+        { key: "note", label: "메모", type: "textarea", full: true },
+      ],
+      submitLabel: "만들기",
+      onSubmit: (values) => api("/api/quotes", { method: "POST", body: values }),
+    });
+    if (result) { state.cartId = result.id; toast("견적함을 만들었습니다."); refresh(); }
+  }
+
+  /* ---- 왼쪽: 견적함 목록 ---- */
+  function drawSide() {
+    side.replaceChildren(...[
+      h("div.hd", {},
+        h("span", { text: `견적함 ${state.carts.length}` }),
+        ref.can("purchasing") ? h("button.btn.sm.primary", { onclick: newCart }, "＋ 새로") : null),
+      ...(state.carts.length
+        ? state.carts.map((cart) => h(`button.prj-btn${state.cartId === cart.id ? ".on" : ""}`, {
+          onclick: () => { state.cartId = cart.id; refresh(); },
+        },
+          h("b", { text: cart.title }),
+          h("span", { text: `${cart.item_count}품목 · ${cart.owner || "-"}` }),
+          h("small", { html: statusChip(cart.status, cartStatusTone(cart.status)) })))
+        : [h("p.muted", { style: { padding: "14px" }, text: "견적함이 없습니다. 통합검색에서 자재를 담아 보세요." })]),
+    ].filter(Boolean));
+  }
+
+  /* ---- 담긴 품목 ---- */
+  function itemTable() {
+    const editable = state.compare?.cart.status === "작성중" && ref.can("purchasing");
+    return h("div.panel", {},
+      h("div.panel-head", {},
+        h("h3", { text: `담긴 자재 ${state.items.length}품목` }),
+        h("div.grow"),
+        h("button.btn.sm", { onclick: () => openScreen("pur.search") }, "자재 더 담기")),
+      h("div.panel-body", {},
+        state.items.length
+          ? h("table.qt-items", {},
+            h("thead", {}, h("tr", {},
+              ...["자재", "규격", "공사", "필요 수량", "사내 가용", "판매처", ""].map((label, index) =>
+                h(`th${[3, 4].includes(index) ? ".num" : ""}`, { text: label })))),
+            h("tbody", {}, state.items.map((item) => h("tr", {},
+              h("td.strong", {}, item.product_name,
+                item.certification ? h("span.tag", { text: item.certification }) : null),
+              h("td.muted", { text: item.spec_label || "-" }),
+              h("td", { text: item.project_name || "-" }),
+              h("td.num", {}, editable
+                ? qtyField(item)
+                : h("b", { text: `${fmt.int(item.quantity)}${item.base_unit}` })),
+              h("td.num", {}, h(`span${item.available < item.quantity ? ".short" : ""}`, {
+                text: `${fmt.int(item.available)}${item.base_unit}`,
+              })),
+              h("td", { text: item.supplier_count ? `${item.supplier_count}곳` : "단가 없음" }),
+              h("td.num", {}, editable
+                ? h("button.btn.sm.danger", {
+                  onclick: async () => {
+                    await guard(() => api(`/api/quotes/${encodeURIComponent(state.cartId)}/items/${encodeURIComponent(item.id)}`,
+                      { method: "DELETE" }), "품목을 뺐습니다.");
+                    refresh();
+                  },
+                }, "빼기")
+                : null)))))
+          : h("p.muted", { text: "담긴 자재가 없습니다. 통합검색에서 제품을 골라 견적함에 담으면 업체별 견적이 여기에 나옵니다." })));
+  }
+
+  /** 수량은 자주 고치므로 표 안에서 바로 바꿉니다. */
+  function qtyField(item) {
+    const input = h("input.qt-qty", { type: "number", min: "0.1", step: "any", value: String(item.quantity) });
+    input.addEventListener("change", async () => {
+      const next = Number(input.value);
+      if (!Number.isFinite(next) || next <= 0) { input.value = String(item.quantity); return; }
+      await guard(() => api(`/api/quotes/${encodeURIComponent(state.cartId)}/items/${encodeURIComponent(item.id)}`,
+        { method: "PUT", body: { quantity: next } }), "수량을 바꿨습니다.");
+      refresh();
+    });
+    return h("span.qt-qty-wrap", {}, input, h("small", { text: item.base_unit }));
+  }
+
+  /* ---- 두 갈래 요약: 한 곳에 몰아주기 vs 쪼개 사기 ---- */
+  function strategyCards() {
+    const { cheapestFull, bestSplit, splitSaving } = state.compare;
+    if (!cheapestFull && !bestSplit) return null;
+
+    const card = (title, note, total, lines, badge) => h("div.qt-strategy", {},
+      h("div.qt-strategy-head", {}, h("b", { text: title }), badge),
+      h("div.qt-strategy-total", { text: fmt.won(total) }),
+      h("div.qt-strategy-note", { text: note }),
+      h("div.qt-strategy-lines", {}, lines.map((line) => h("span", { text: line }))));
+
+    const cheaper = splitSaving === null ? null : splitSaving > 0 ? "split" : splitSaving < 0 ? "full" : null;
+
+    return h("div.qt-strategies", {}, ...[
+      cheapestFull
+        ? card("한 곳에 몰아주기", `${cheapestFull.supplier_name} · 납기 ${leadText(cheapestFull.lead_days)}`,
+          cheapestFull.total,
+          [`공급가 ${fmt.won(cheapestFull.supply)}`, `배송비 ${fmt.won(cheapestFull.shipping)}`, `부가세 ${fmt.won(cheapestFull.vat)}`],
+          cheaper === "full" ? h("span.tag.best", {}, "더 쌈") : null)
+        : h("div.qt-strategy.dim", {},
+          h("div.qt-strategy-head", {}, h("b", {}, "한 곳에 몰아주기")),
+          h("p.muted", { text: "담긴 자재를 전부 파는 업체가 없습니다. 쪼개 사야 합니다." })),
+      bestSplit
+        ? card("품목별 최적으로 쪼개기", `${bestSplit.supplier_count}곳에 주문 · 납기 ${leadText(bestSplit.lead_days)}`,
+          bestSplit.total,
+          [`공급가 ${fmt.won(bestSplit.supply)}`, `배송비 ${fmt.won(bestSplit.shipping)}`, `부가세 ${fmt.won(bestSplit.vat)}`],
+          cheaper === "split" ? h("span.tag.best", {}, "더 쌈") : null)
+        : null,
+      splitSaving
+        ? h("div.qt-saving", {},
+          h("span", { text: splitSaving > 0 ? "쪼개 사면" : "한 곳에 몰아주면" }),
+          h("b", { text: fmt.won(Math.abs(splitSaving)) }),
+          h("span", { text: "아낍니다" }),
+          h("small", {
+            text: splitSaving > 0
+              ? "대신 주문이 여러 건으로 늘고, 납기는 가장 늦은 쪽을 따릅니다"
+              : "배송비를 한 번만 내기 때문입니다",
+          }))
+        : null,
+    ].filter(Boolean));
+  }
+
+  /* ---- 업체별 견적 표 ---- */
+  function supplierTable() {
+    const { suppliers, items } = state.compare;
+    if (!suppliers.length) return null;
+    const fullOnes = suppliers.filter((row) => row.full);
+    const cheapest = fullOnes.length ? Math.min(...fullOnes.map((row) => row.total)) : null;
+
+    return h("div.panel", {},
+      h("div.panel-head", {}, h("h3", { text: `업체별 견적 ${suppliers.length}곳` }),
+        h("span.muted", { text: "행을 누르면 품목별 단가가 펼쳐집니다" })),
+      h("div.panel-body.flush", {}, suppliers.map((supplier) => {
+        const open = state.expanded.has(supplier.supplier_id);
+        return h("div.qt-sup", {}, ...[
+          h("button.qt-sup-row", {
+            onclick: () => {
+              if (open) state.expanded.delete(supplier.supplier_id);
+              else state.expanded.add(supplier.supplier_id);
+              draw();
+            },
+          },
+            h("div.qt-sup-name", {},
+              h("b", { text: supplier.supplier_name }),
+              supplier.full && supplier.total === cheapest ? h("span.tag.best", {}, "최저가") : null,
+              supplier.full
+                ? h("span.tag", { text: `전 품목 ${items.length}` })
+                : h("span.tag.warn", { text: `${supplier.covers}/${items.length}품목` })),
+            h("div.qt-sup-figs", {},
+              fig("공급가", fmt.won(supplier.supply)),
+              fig("배송비", fmt.won(supplier.shipping)),
+              fig("부가세", fmt.won(supplier.vat)),
+              fig("총액", fmt.won(supplier.total), true),
+              fig("납기", leadText(supplier.lead_days))),
+            h("span.qt-caret", { text: open ? "▴" : "▾" })),
+          open ? supplierLines(supplier) : null,
+        ].filter(Boolean));
+      })));
+  }
+
+  const fig = (label, value, strong) => h("div.qt-fig", {},
+    h("span", { text: label }), h(`b${strong ? ".strong" : ""}`, { text: value }));
+
+  function supplierLines(supplier) {
+    return h("div.qt-sup-detail", {}, ...[
+      h("table.qt-lines", {},
+        h("thead", {}, h("tr", {},
+          ...["자재", "필요", "판매단위", "구매 수량", "단가", "공급가", "납기"].map((label, index) =>
+            h(`th${[1, 3, 4, 5].includes(index) ? ".num" : ""}`, { text: label })))),
+        h("tbody", {}, supplier.lines.map((line) => h("tr", {},
+          h("td", { text: line.product_name }),
+          h("td.num", { text: `${fmt.int(line.quantity)}${line.base_unit}` }),
+          h("td", { text: line.sell_unit }),
+          h("td.num", {}, `${fmt.int(line.buy_quantity)}${line.base_unit}`,
+            line.over > 0 ? h("small.over", { text: `+${fmt.int(line.over)} 더 삼` }) : null),
+          h("td.num", { text: fmt.won(line.price) }),
+          h("td.num.strong", { text: fmt.won(line.supply) }),
+          h("td", { text: leadText(line.lead_days) }))))),
+      supplier.missing.length
+        ? h("div.qt-missing", {},
+          h("b", {}, "이 업체에 없는 자재"),
+          h("span", { text: supplier.missing.map((row) => row.product_name).join(", ") }))
+        : null,
+      ref.can("purchasing") && state.compare.cart.status === "작성중"
+        ? h("div.qt-sup-actions", {},
+          h("button.btn.primary.sm", {
+            onclick: () => requestFromSupplier(supplier),
+          }, `${supplier.supplier_name}에 ${supplier.lines.length}품목 구매요청`))
+        : null,
+    ].filter(Boolean));
+  }
+
+  /** 고른 업체 조합을 기존 구매요청 → 승인 → 발주 흐름으로 넘깁니다. */
+  async function requestFromSupplier(supplier) {
+    const result = await openForm({
+      title: "견적 → 구매요청",
+      sub: `${supplier.supplier_name} · ${supplier.lines.length}품목 · ${fmt.won(supplier.total)}`,
+      fields: [
+        { key: "projectId", label: "사용 공사", type: "select", required: true, options: ref.projectOpts },
+        { key: "requestedDate", label: "희망납기", type: "date", value: addDays(today(), 7) },
+        {
+          key: "purpose", label: "사용 목적", type: "textarea", required: true, full: true,
+          value: `${state.compare.cart.title} 일괄 구매`,
+        },
+      ],
+      submitLabel: `${supplier.lines.length}건 구매요청`,
+      footNote: supplier.missing.length
+        ? `이 업체가 팔지 않는 ${supplier.missing.length}품목은 요청에 들어가지 않습니다.`
+        : "품목마다 구매요청이 만들어지고, 승인하면 발주서로 넘어갑니다.",
+      onSubmit: (values) => api(`/api/quotes/${encodeURIComponent(state.cartId)}/request`, {
+        method: "POST",
+        body: {
+          ...values,
+          lines: supplier.lines.map((line) => ({
+            productId: line.product_id, supplierProductId: line.offer_id, projectId: values.projectId,
+          })),
+        },
+      }),
+    });
+    if (result) {
+      toast(`구매요청 ${result.requests.length}건을 만들었습니다.`);
+      refresh();
+    }
+  }
+
+  function draw() {
+    drawSide();
+    if (!state.compare) {
+      main.replaceChildren(h("div.grid-empty", {},
+        h("b", { text: "견적함이 없습니다" }),
+        h("span", { text: "자재 통합검색에서 제품을 골라 담으면 업체별 견적을 비교할 수 있습니다." }),
+        h("div", { style: { marginTop: "16px", display: "flex", gap: "8px" } },
+          h("button.btn.primary", { onclick: () => openScreen("pur.search") }, "자재 통합검색"),
+          ref.can("purchasing") ? h("button.btn", { onclick: newCart }, "빈 견적함 만들기") : null)));
+      return;
+    }
+    main.replaceChildren(...[
+      state.compare.unpriced.length
+        ? h("div.cmp-warn", {
+          text: `단가가 등록되지 않은 자재가 ${state.compare.unpriced.length}개 있습니다: ${state.compare.unpriced.map((row) => row.product_name).join(", ")}`,
+        })
+        : null,
+      itemTable(),
+      state.items.length ? strategyCards() : null,
+      state.items.length ? supplierTable() : null,
+    ].filter(Boolean));
+  }
+
+  const el = h("div.screen", {},
+    h("div.screen-head", {},
+      h("div", {}, h("div.crumb", { text: "구매관리 > 견적 비교" }), h("h1", { text: "견적 비교" })),
+      h("div.head-actions", {}, ...[
+        ref.can("purchasing") ? h("button.btn", { onclick: newCart }, "＋ 견적함") : null,
+        h("button.btn", { onclick: () => refresh() }, "새로고침"),
+      ].filter(Boolean))),
+    h("div"),
+    h("div.screen-body", {}, h("div.quote-layout", {}, side, h("div.quote-scroll", {}, main))));
+
+  return { el, refresh };
+}
+
 /* ---------- 제품 비교 -------------------------------------------------------
    여러 제품을 나란히 놓고 고릅니다. 값이 갈리는 행만 눈에 띄게 하고,
    규격 → 가격 → 납기 → 과거구매 → 품질 순서로 봅니다. 전기자재는
@@ -1455,7 +1761,7 @@ function catalogSearch() {
     const picked = [...state.picked.values()];
     pickBar.classList.toggle("on", picked.length > 0);
     if (!picked.length) return pickBar.replaceChildren();
-    pickBar.replaceChildren(
+    pickBar.replaceChildren(...[
       h("div.pick-names", {},
         h("b", { text: `${picked.length}개 선택` }),
         h("span.muted", { text: picked.map((row) => row.name).join(" · ") })),
@@ -1463,6 +1769,19 @@ function catalogSearch() {
       h("button.btn.sm", {
         onclick: () => { state.picked.clear(); draw(); },
       }, "선택 해제"),
+      ref.can("purchasing")
+        ? h("button.btn.sm", {
+          onclick: async () => {
+            // 수량은 견적 비교 화면에서 바로 고치므로, 담을 때는 1 로 넣고 넘어갑니다.
+            await guard(async () => {
+              for (const product of picked) await addToQuote(product, 1);
+            }, `${picked.length}개를 견적함에 담았습니다.`);
+            state.picked.clear();
+            draw();
+            openScreen("pur.quote");
+          },
+        }, "견적함에 담기")
+        : null,
       h("button.btn.sm.primary", {
         disabled: picked.length < 2,
         title: picked.length < 2 ? "2개 이상 골라 주세요" : "",
@@ -1473,7 +1792,8 @@ function catalogSearch() {
           lead_time: item.lead_days === null ? "" : `${item.lead_days}일`,
           stock: item.stock_on_hand, shipping: item.shipping || 0,
         }, run)),
-      }, `${picked.length}개 비교하기`));
+      }, `${picked.length}개 비교하기`),
+    ].filter(Boolean));
   }
 
   function draw() {
@@ -3479,7 +3799,7 @@ export const MODULES = [
   },
   {
     id: "purchase", name: "구매", groups: [
-      { name: "구매관리", items: [["pur.search", "자재 통합검색"], ["pur.request", "구매요청"], ["pur.order", "발주서"], ["pur.receive", "입고처리"], ["pur.receipts", "입고내역"]] },
+      { name: "구매관리", items: [["pur.search", "자재 통합검색"], ["pur.quote", "견적 비교"], ["pur.request", "구매요청"], ["pur.order", "발주서"], ["pur.receive", "입고처리"], ["pur.receipts", "입고내역"]] },
       { name: "기준정보", items: [["base.supplier", "공급처등록"], ["base.import", "공급처 품목 등록"], ["base.catalog", "품목 마스터"]] },
     ],
   },
@@ -3532,6 +3852,7 @@ export const SCREENS = {
   "pur.search": { title: "자재 통합검색", build: purSearch },
   "base.import": { title: "공급처 품목 등록", build: baseImport },
   "base.catalog": { title: "품목 마스터", build: baseCatalog },
+  "pur.quote": { title: "견적 비교", build: quoteScreen },
   "pur.request": { title: "구매요청", build: purRequest },
   "pur.order": { title: "발주서", build: purOrder },
   "pur.receive": { title: "입고처리", build: purReceive },

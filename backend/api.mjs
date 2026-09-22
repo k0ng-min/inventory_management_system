@@ -7,6 +7,10 @@ import {
   bidStatus, listBidNotices, bidCalendar, syncBidNotices, toggleStar, saveMemo, BID_KINDS,
 } from "./g2b.mjs";
 import { searchProducts, productDetail, offersFor, priceTrend, priceAlerts, compareProducts } from "./search.mjs";
+import {
+  listCarts, getCart, cartItems, createCart, addItem, updateItem,
+  removeItem, removeCart, compareCart, requestFromQuote,
+} from "./quotes.mjs";
 import { ingestSupplierCatalog, rowsFromCsv } from "./ingest.mjs";
 import { CATEGORIES } from "./catalog.mjs";
 import { shopStatus, probe as g2bProbe, syncShoppingMall, SHOP_OPERATIONS } from "./g2b-shop.mjs";
@@ -1102,6 +1106,44 @@ export async function handleApi(request, response, url) {
   if (method === "DELETE" && /^\/api\/schedules\/[^/]+$/.test(path)) {
     requireRole(user, "schedule");
     return json(response, 200, removeSchedule(seg(url, 3), user.name));
+  }
+
+  /* ---- 견적함 · 업체별 견적 비교 ---- */
+
+  if (method === "GET" && path === "/api/quotes") {
+    return json(response, 200, listCarts(user.name));
+  }
+  if (method === "POST" && path === "/api/quotes") {
+    requireRole(user, "purchasing");
+    return json(response, 201, createCart(body, user));
+  }
+  if (method === "GET" && /^\/api\/quotes\/[^/]+$/.test(path)) {
+    const cart = getCart(seg(url, 3));
+    return json(response, 200, { cart, items: cartItems(cart.id) });
+  }
+  if (method === "DELETE" && /^\/api\/quotes\/[^/]+$/.test(path)) {
+    requireRole(user, "purchasing");
+    return json(response, 200, removeCart(seg(url, 3), user));
+  }
+  if (method === "GET" && /^\/api\/quotes\/[^/]+\/compare$/.test(path)) {
+    return json(response, 200, compareCart(seg(url, 3)));
+  }
+  if (method === "POST" && /^\/api\/quotes\/[^/]+\/items$/.test(path)) {
+    requireRole(user, "purchasing");
+    return json(response, 201, addItem(seg(url, 3), body, user));
+  }
+  if (method === "PUT" && /^\/api\/quotes\/[^/]+\/items\/[^/]+$/.test(path)) {
+    requireRole(user, "purchasing");
+    return json(response, 200, updateItem(seg(url, 3), seg(url, 5), body, user));
+  }
+  if (method === "DELETE" && /^\/api\/quotes\/[^/]+\/items\/[^/]+$/.test(path)) {
+    requireRole(user, "purchasing");
+    return json(response, 200, removeItem(seg(url, 3), seg(url, 5), user));
+  }
+  // 고른 조합을 기존 구매요청 → 승인 → 발주 흐름으로 넘깁니다.
+  if (method === "POST" && /^\/api\/quotes\/[^/]+\/request$/.test(path)) {
+    requireRole(user, "purchasing");
+    return json(response, 201, requestFromQuote(seg(url, 3), body, createRequest, user));
   }
 
   /* ---- 카탈로그: 통합검색 · 업체별 가격비교 ---- */

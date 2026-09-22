@@ -356,6 +356,123 @@ async function main() {
   check("가격 급등 감지", alerts.status === 200 && alerts.body.some((row) => row.product_id === cv.id && row.change > 0),
     JSON.stringify(alerts.body));
 
+  console.log("\n견적함 · 업체별 견적 비교");
+
+  // 업체 두 곳이 세 품목을 서로 다르게 팝니다. A 는 전부 팔고, B 는 둘만 싸게 팝니다.
+  const qSupA = await as("POST", "/api/suppliers", { name: "견적 공급처A", terms: "월말결제" });
+  const qSupB = await as("POST", "/api/suppliers", { name: "견적 공급처B", terms: "현금" });
+  await as("POST", "/api/catalog/import", {
+    supplierId: qSupA.body.id, filename: "qa.csv",
+    csv: [
+      "품명,단위,단가,배송비,납기",
+      "CV 6SQ 3C 0.6/1kV,100m,240000,20000,3일",
+      "VCTF 1.5SQ 3C,100m,90000,20000,2일",
+      "터미널 2.5 Y형,100EA,12000,20000,1일",
+    ].join("\n"),
+  });
+  await as("POST", "/api/catalog/import", {
+    supplierId: qSupB.body.id, filename: "qb.csv",
+    csv: [
+      "품명,단위,단가,배송비,납기",
+      "CV 6SQ 3C 0.6/1kV,100m,228000,35000,5일",
+      "VCTF 1.5SQ 3C,100m,87000,35000,5일",
+    ].join("\n"),
+  });
+
+  const qCv = (await as("GET", `/api/catalog/search?q=${encodeURIComponent("CV 6SQ 3C")}`)).body.products[0];
+  const qVctf = (await as("GET", `/api/catalog/search?q=${encodeURIComponent("VCTF 1.5 3C")}`)).body.products[0];
+  const qTerm = (await as("GET", `/api/catalog/search?q=${encodeURIComponent("터미널 2.5 Y")}`)).body.products[0];
+  check("견적용 제품 3종 확보", Boolean(qCv && qVctf && qTerm),
+    JSON.stringify([qCv?.id, qVctf?.id, qTerm?.id]));
+
+  const cart = await as("POST", "/api/quotes", { title: "3층 배관 자재" });
+  check("견적함 생성", cart.status === 201 && cart.body.status === "작성중", JSON.stringify(cart.body));
+  check("견적함 목록", (await as("GET", "/api/quotes")).body.some((row) => row.id === cart.body.id));
+
+  check("없는 제품은 담지 못함",
+    (await as("POST", `/api/quotes/${cart.body.id}/items`, { productId: "NOPE", quantity: 1 })).status === 400);
+  check("수량 0은 거부",
+    (await as("POST", `/api/quotes/${cart.body.id}/items`, { productId: qCv.id, quantity: 0 })).status === 400);
+
+  await as("POST", `/api/quotes/${cart.body.id}/items`, { productId: qCv.id, quantity: 250, projectId: project.body.id });
+  await as("POST", `/api/quotes/${cart.body.id}/items`, { productId: qVctf.id, quantity: 100 });
+  const cartFilled = await as("POST", `/api/quotes/${cart.body.id}/items`, { productId: qTerm.id, quantity: 150 });
+  check("견적함에 3품목", cartFilled.body.length === 3, String(cartFilled.body.length));
+
+  const again = await as("POST", `/api/quotes/${cart.body.id}/items`, { productId: qVctf.id, quantity: 50 });
+  check("같은 제품은 수량을 더함",
+    again.body.length === 3 && again.body.find((row) => row.product_id === qVctf.id).quantity === 150,
+    JSON.stringify(again.body.map((row) => [row.product_id, row.quantity])));
+  await as("PUT", `/api/quotes/${cart.body.id}/items/${again.body.find((r) => r.product_id === qVctf.id).id}`,
+    { quantity: 100 });
+
+  const cmpQ = await as("GET", `/api/quotes/${cart.body.id}/compare`);
+  check("견적 비교 조회", cmpQ.status === 200 && cmpQ.body.suppliers.length === 2, String(cmpQ.body.suppliers?.length));
+
+  const supA = cmpQ.body.suppliers.find((row) => row.supplier_id === qSupA.body.id);
+  const supB = cmpQ.body.suppliers.find((row) => row.supplier_id === qSupB.body.id);
+  check("전부 파는 업체가 앞에", cmpQ.body.suppliers[0].supplier_id === qSupA.body.id,
+    cmpQ.body.suppliers.map((row) => `${row.supplier_name}:${row.coverage}%`).join(" "));
+  check("A는 전량 공급", supA.full === true && supA.covers === 3, JSON.stringify(supA.coverage));
+  check("B는 일부만 — 못 파는 품목을 짚어 줌",
+    supB.full === false && supB.missing.length === 1 && supB.missing[0].product_id === qTerm.id,
+    JSON.stringify(supB.missing));
+
+  // 250m 를 100m 릴로 사면 3릴(300m). 50m 를 더 사게 되는 것을 숨기지 않습니다.
+  const cvLine = supA.lines.find((row) => row.product_id === qCv.id);
+  check("묶음 올림 — 250m는 3릴", cvLine.packs === 3, String(cvLine.packs));
+  check("초과 구매량 표시", cvLine.over === 50, String(cvLine.over));
+  check("줄 공급가 = 묶음 × 단가", cvLine.supply === 3 * 240000, String(cvLine.supply));
+
+  // A: CV 720,000 + VCTF 90,000 + 터미널 24,000(150EA → 100EA 2묶음) = 834,000
+  check("업체 공급가 합계", supA.supply === 720000 + 90000 + 24000, String(supA.supply));
+  check("배송비는 주문당 한 번", supA.shipping === 20000, String(supA.shipping));
+  check("부가세 10%", supA.vat === Math.round((supA.supply + supA.shipping) * 0.1), String(supA.vat));
+  check("총액 = 공급가 + 배송비 + 부가세",
+    supA.total === supA.supply + supA.shipping + supA.vat, String(supA.total));
+  check("납기는 가장 늦은 품목 기준", supA.lead_days === 3, String(supA.lead_days));
+
+  // 쪼개 사기: CV·VCTF 는 B 가 싸고, 터미널은 A 만 팝니다 → 주문 2건
+  const split = cmpQ.body.bestSplit;
+  check("품목별 최적은 2개 업체로 갈림", split.supplier_count === 2, String(split.supplier_count));
+  check("쪼개도 3품목 모두 덮음", split.covers === 3, String(split.covers));
+  check("쪼개면 배송비가 업체 수만큼", split.shipping === 20000 + 35000, String(split.shipping));
+  check("절감액 = 한곳몰아주기 − 쪼개기",
+    cmpQ.body.splitSaving === cmpQ.body.cheapestFull.total - split.total,
+    `${cmpQ.body.splitSaving} / ${cmpQ.body.cheapestFull.total} - ${split.total}`);
+  // 손으로 검산한 값입니다.
+  //   한 곳(A): 720,000 + 90,000 + 24,000 = 834,000 + 배송 20,000 → VAT 85,400 → 939,400
+  //   쪼개기  : B 684,000 + 87,000 = 771,000 + 배송 35,000 → VAT 80,600 → 886,600
+  //             A 터미널 24,000 + 배송 20,000 → VAT 4,400 → 48,400   합계 935,000
+  // 배송비를 한 번 더 내고도 단가 차이가 커서 쪼개는 쪽이 4,400원 쌉니다.
+  check("한 곳에 몰아준 총액", cmpQ.body.cheapestFull.total === 939400, String(cmpQ.body.cheapestFull.total));
+  check("쪼개 산 총액", split.total === 935000, String(split.total));
+  check("절감액 4,400원", cmpQ.body.splitSaving === 4400, String(cmpQ.body.splitSaving));
+
+  // 견적 → 구매요청 → 기존 승인·발주 흐름
+  const fromQuote = await as("POST", `/api/quotes/${cart.body.id}/request`, {
+    purpose: "3층 배관 자재 일괄",
+    requestedDate: "2026-10-20",
+    lines: supA.lines.map((line) => ({
+      productId: line.product_id, supplierProductId: line.offer_id, projectId: project.body.id,
+    })),
+  });
+  check("견적 → 구매요청 3건", fromQuote.status === 201 && fromQuote.body.requests.length === 3,
+    JSON.stringify(fromQuote.body.requests?.length));
+  check("요청에 견적의 공급처가 붙음",
+    fromQuote.body.requests.every((row) => row.preferred_supplier_id === qSupA.body.id),
+    JSON.stringify(fromQuote.body.requests.map((row) => row.preferred_supplier_id)));
+  check("견적함이 발주완료로 닫힘", fromQuote.body.cart.status === "발주완료", fromQuote.body.cart.status);
+  check("닫힌 견적함은 더 못 담음",
+    (await as("POST", `/api/quotes/${cart.body.id}/items`, { productId: qCv.id, quantity: 1 })).status === 400);
+
+  check("조회전용은 견적함을 못 만듦", (await asViewer("POST", "/api/quotes", { title: "x" })).status === 403);
+  check("조회전용도 견적 비교는 봄",
+    (await asViewer("GET", `/api/quotes/${cart.body.id}/compare`)).status === 200);
+  check("빈 견적함 비교는 빈 결과", (await as("GET",
+    `/api/quotes/${(await as("POST", "/api/quotes", { title: "빈 견적" })).body.id}/compare`)).body.suppliers.length === 0);
+  check("없는 견적함은 404", (await as("GET", "/api/quotes/NOPE/compare")).status === 404);
+
   console.log("\n제품 비교");
   const hfix = (await as("GET", `/api/catalog/search?q=${encodeURIComponent("HFIX 2.5")}`)).body.products[0];
   check("비교 대상 두 번째 제품 확보", Boolean(hfix) && hfix.id !== cv.id, JSON.stringify(hfix?.id));

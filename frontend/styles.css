@@ -1221,3 +1221,116 @@ tr.cmp-group .muted { margin-left: 10px; font-size: 12px; font-weight: 400; }
   .pick-names .muted { display: none; }
   table.cmp thead th { min-width: 150px; }
 }
+
+/* ==========================================================================
+   견적 비교
+   "한 곳에 몰아주면 얼마 / 쪼개 사면 얼마" 를 나란히 놓는 화면입니다.
+   ========================================================================== */
+
+.quote-layout { display: grid; grid-template-columns: 252px 1fr; gap: 0; height: 100%; min-height: 0; }
+.quote-side { border-right: 1px solid var(--line); overflow-y: auto; background: var(--surface-2); }
+.quote-side .hd {
+  display: flex; align-items: center; gap: 8px; padding: 14px 16px;
+  font-size: 12px; color: var(--fg-3); border-bottom: 1px solid var(--line);
+}
+.quote-side .hd span { flex: 1; }
+.quote-scroll { overflow-y: auto; min-height: 0; }
+.quote-main { display: flex; flex-direction: column; gap: 16px; padding: 18px; }
+
+table.qt-items { width: 100%; border-collapse: collapse; }
+table.qt-items th, table.qt-items td {
+  padding: 11px 12px; text-align: left; font-size: 14px;
+  border-bottom: 1px solid var(--line-soft);
+}
+table.qt-items th { font-weight: 600; color: var(--fg-2); font-size: 13px; white-space: nowrap; }
+/* 이름·규격만 줄바꿈을 허용하고, 나머지 열은 내용 폭에 맞춰 붙입니다. */
+table.qt-items th:nth-child(n+3), table.qt-items td:nth-child(n+3) { white-space: nowrap; width: 1%; }
+table.qt-items td:nth-child(2) { color: var(--fg-3); }
+
+/* 왼쪽 목록의 상태 배지가 버튼 폭만큼 늘어나지 않도록 */
+.quote-side .prj-btn small { display: block; margin-top: 7px; }
+.quote-side .prj-btn small .st { display: inline-block; width: auto; }
+table.qt-items th.num, table.qt-items td.num { text-align: right; }
+table.qt-items td.strong { font-weight: 600; }
+table.qt-items td.strong .tag { margin-left: 6px; }
+table.qt-items td.muted { color: var(--fg-3); }
+table.qt-items tbody tr:last-child td { border-bottom: none; }
+.qt-qty-wrap { display: inline-flex; align-items: baseline; gap: 5px; }
+.qt-qty {
+  width: 92px; height: 32px; padding: 0 9px; font: inherit; font-size: 14px;
+  text-align: right; font-variant-numeric: tabular-nums;
+  border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--surface);
+}
+.qt-qty:focus { outline: 2px solid var(--accent-soft); outline-offset: -1px; }
+.qt-qty-wrap small { font-size: 12px; color: var(--fg-3); }
+table.qt-items .short { color: var(--danger); font-weight: 600; }
+
+/* 두 갈래 요약 */
+.qt-strategies { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.qt-strategy {
+  padding: 18px; background: var(--surface); border: 1px solid var(--line);
+  border-radius: var(--r-card);
+}
+.qt-strategy.dim { background: var(--surface-2); }
+.qt-strategy-head { display: flex; align-items: center; gap: 8px; }
+.qt-strategy-head b { font-size: 14px; font-weight: 600; }
+.qt-strategy-total {
+  margin: 10px 0 4px; font-size: 27px; font-weight: 700;
+  letter-spacing: -0.02em; font-variant-numeric: tabular-nums;
+}
+.qt-strategy-note { font-size: 13px; color: var(--fg-2); }
+.qt-strategy-lines { display: flex; gap: 14px; flex-wrap: wrap; margin-top: 12px; }
+.qt-strategy-lines span { font-size: 12px; color: var(--fg-3); font-variant-numeric: tabular-nums; }
+
+.qt-saving {
+  grid-column: 1 / -1; display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap;
+  padding: 13px 18px; background: var(--accent-wash);
+  border: 1px solid var(--accent-line); border-radius: var(--r-card);
+  font-size: 14px; color: var(--fg-2);
+}
+.qt-saving b { font-size: 17px; font-weight: 700; color: var(--accent-deep); font-variant-numeric: tabular-nums; }
+.qt-saving small { flex-basis: 100%; font-size: 12px; color: var(--fg-3); }
+
+/* 업체별 견적 */
+.panel-body.flush { padding: 0; }
+.qt-sup { border-bottom: 1px solid var(--line); }
+.qt-sup:last-child { border-bottom: none; }
+.qt-sup-row {
+  display: flex; align-items: center; gap: 16px; width: 100%;
+  padding: 15px 18px; background: none; border: none; cursor: pointer; text-align: left;
+}
+.qt-sup-row:hover { background: var(--surface-2); }
+.qt-sup-name { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; flex: 1; min-width: 0; }
+.qt-sup-name b { font-size: 15px; font-weight: 600; }
+.qt-sup-figs { display: flex; gap: 22px; flex: none; }
+.qt-fig { display: flex; flex-direction: column; gap: 2px; text-align: right; min-width: 74px; }
+.qt-fig > span { font-size: 11px; color: var(--fg-3); }
+.qt-fig > b { font-size: 14px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.qt-fig > b.strong { font-size: 17px; font-weight: 700; color: var(--accent-deep); }
+.qt-caret { flex: none; color: var(--fg-3); font-size: 12px; }
+
+.qt-sup-detail { padding: 4px 18px 18px; background: var(--surface-2); }
+table.qt-lines { width: 100%; border-collapse: collapse; }
+table.qt-lines th, table.qt-lines td {
+  padding: 9px 10px; font-size: 13px; text-align: left;
+  border-bottom: 1px solid var(--line-soft);
+}
+table.qt-lines th { font-weight: 600; color: var(--fg-3); font-size: 12px; }
+table.qt-lines th.num, table.qt-lines td.num { text-align: right; font-variant-numeric: tabular-nums; }
+table.qt-lines td.strong { font-weight: 600; }
+table.qt-lines small.over { display: block; font-size: 11px; color: var(--warn); }
+.qt-missing {
+  display: flex; gap: 10px; flex-wrap: wrap; margin-top: 12px; padding: 11px 13px;
+  background: var(--warn-wash); border: 1px solid var(--warn-line);
+  border-radius: var(--r-md); font-size: 13px; color: var(--fg-2);
+}
+.qt-missing b { color: var(--warn); font-weight: 600; }
+.qt-sup-actions { margin-top: 14px; }
+
+@media (max-width: 1080px) {
+  .quote-layout { grid-template-columns: 1fr; }
+  .quote-side { border-right: none; border-bottom: 1px solid var(--line); max-height: 180px; }
+  .qt-strategies { grid-template-columns: 1fr; }
+  .qt-sup-row { flex-wrap: wrap; }
+  .qt-sup-figs { gap: 14px; }
+}

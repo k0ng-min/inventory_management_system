@@ -370,6 +370,30 @@ CREATE TABLE IF NOT EXISTS price_history (
   user TEXT
 );
 
+-- 견적함. 필요한 자재를 한 리스트에 담아 업체별 견적을 비교합니다.
+-- 한 번에 여러 품목을 사는 것이 보통이라, 품목 하나씩 비교해서는 답이 안 나옵니다.
+CREATE TABLE IF NOT EXISTS quote_carts (
+  id TEXT PRIMARY KEY,
+  title TEXT NOT NULL,
+  owner TEXT,
+  status TEXT NOT NULL DEFAULT '작성중',   -- 작성중 | 발주완료 | 보관
+  note TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS quote_items (
+  id TEXT PRIMARY KEY,
+  cart_id TEXT NOT NULL REFERENCES quote_carts(id) ON DELETE CASCADE,
+  product_id TEXT NOT NULL REFERENCES catalog_products(id) ON DELETE CASCADE,
+  quantity REAL NOT NULL DEFAULT 1,        -- 제품 기본단위 기준
+  project_id TEXT,                         -- 행마다 공사가 다를 수 있습니다
+  note TEXT,
+  added_at TEXT NOT NULL,
+  UNIQUE (cart_id, product_id)
+);
+CREATE INDEX IF NOT EXISTS idx_quote_items_cart ON quote_items(cart_id);
+
 -- 공급처 품목 적재 이력
 CREATE TABLE IF NOT EXISTS catalog_imports (
   id TEXT PRIMARY KEY,
