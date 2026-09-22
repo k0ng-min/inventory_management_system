@@ -533,7 +533,10 @@ button.metric:hover { border-color: var(--accent-line); box-shadow: var(--shadow
    ========================================================================== */
 
 .cal { border: 1px solid var(--line); border-radius: var(--r-card); overflow: hidden; background: var(--surface); }
-.cal-head { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); background: var(--surface-2); border-bottom: 1px solid var(--line); }
+.cal-head {
+  display: grid; grid-template-columns: repeat(7, minmax(0, 1fr));
+  background: var(--surface); border-bottom: 1px solid var(--line-soft);
+}
 .cal-head > div {
   padding: 11px 10px; font-size: 12px; font-weight: 600; color: var(--fg-3);
   text-align: center; letter-spacing: .04em;
@@ -719,66 +722,80 @@ html, body { overflow-x: hidden; }
 
 
 /* ==========================================================================
-   팀 일정 달력
-   여러 날 걸친 일정은 칸마다 반복해 찍지 않고 가로 막대 하나로 잇습니다.
-   그래서 날짜 칸(.sched-week-days)과 막대층(.sched-week-bars)을 겹쳐 둡니다.
+   일정표 (월 달력)
+
+   칸마다 자기 일정만 쌓습니다. 예전처럼 셀 위에 가로 막대를 띄우면 막대끼리,
+   또 날짜 숫자와 자리를 다투면서 겹쳐 보입니다. 요즘 달력(구글·노션)이 쓰는
+   방식대로 각 칸이 자기 목록을 가지면 구조상 겹칠 수가 없습니다.
+   여러 날 일정은 이어지는 쪽에 ‹ › 를 붙여 알립니다.
    ========================================================================== */
 
-.sched-cal { border: 1px solid var(--line); border-radius: 12px; overflow: hidden; background: var(--surface); }
+.sched-cal {
+  border: 1px solid var(--line-soft); border-radius: 14px; overflow: hidden;
+  background: var(--surface); box-shadow: 0 1px 2px rgba(15, 23, 42, .04);
+}
 .sched-weeks { display: flex; flex-direction: column; }
-
-.sched-week { position: relative; border-bottom: 1px solid var(--line); min-height: 112px; }
+.sched-week {
+  display: grid; grid-template-columns: repeat(7, minmax(0, 1fr));
+  border-bottom: 1px solid var(--line-soft); min-height: 118px;
+}
 .sched-week:last-child { border-bottom: 0; }
 
-.sched-week-days { position: absolute; inset: 0; display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); }
 .sched-day {
-  border: 0; border-right: 1px solid var(--line-soft); background: transparent;
-  padding: 7px 9px 0; text-align: left; cursor: pointer; font: inherit;
-  display: flex; align-items: flex-start; justify-content: space-between; gap: 4px;
+  display: flex; flex-direction: column; gap: 4px; min-width: 0;
+  padding: 8px 8px 10px; border-right: 1px solid var(--line-soft);
+  background: transparent; text-align: left; cursor: pointer; font: inherit;
 }
-.sched-day:nth-child(7) { border-right: 0; }
+.sched-day:nth-child(7n) { border-right: 0; }
+.sched-day-head { display: flex; align-items: center; justify-content: space-between; }
 .sched-day .n {
   font-size: 13px; font-weight: 500; color: var(--fg-2);
   font-variant-numeric: tabular-nums; line-height: 26px;
   width: 26px; height: 26px; text-align: center; border-radius: 50%;
   transition: background .12s, color .12s, box-shadow .12s;
 }
-.sched-day:nth-child(1) .n { color: var(--danger); }
-.sched-day:nth-child(7) .n { color: var(--accent-deep); }
+.sched-day:nth-child(7n+1) .n { color: var(--danger); }
+.sched-day:nth-child(7n) .n { color: var(--accent-deep); }
 .sched-day.out .n { color: #cbd5e1; }
+.sched-day.out { background: rgba(248, 250, 252, .6); }
 
-/* 오늘 · 선택한 날 —— 칸에는 색을 깔지 않는다.
-   일정 막대가 칸 위를 가로지르기 때문에, 칸을 칠하면 막대와 반드시 부딪힌다.
-   요즘 달력(구글 캘린더·노션)이 그렇듯 표시는 '날짜 숫자' 에만 얹는다. */
+/* 오늘 · 고른 날 — 칸이 아니라 날짜 숫자에만 표시합니다. */
 .sched-day:hover .n { background: var(--surface-3); }
 .sched-day.on .n { box-shadow: inset 0 0 0 1.5px var(--accent); color: var(--accent-deep); font-weight: 700; }
 .sched-day.today .n { background: var(--accent); color: #fff; font-weight: 700; box-shadow: none; }
 .sched-day.today:hover .n { background: var(--accent-deep); }
-/* 오늘이면서 선택된 날은 채운 원 하나로 끝낸다 — 고리를 겹쳐 두지 않는다. */
 .sched-day.on.today .n { box-shadow: none; color: #fff; }
-.sched-day .more { font-size: 11px; color: var(--fg-3); line-height: 26px; }
 
-/* 막대층은 날짜 숫자 아래에서 시작하고, 클릭은 막대에만 걸립니다. */
-.sched-week-bars { position: absolute; left: 0; right: 0; top: 38px; bottom: 0; pointer-events: none; }
-.sched-bar {
-  position: absolute; height: 23px; border-radius: 6px; pointer-events: auto;
-  border: 0; cursor: pointer; padding: 0 9px; font: inherit; font-size: 12.5px; line-height: 23px;
-  font-weight: 500; letter-spacing: -0.01em;
-  border-left: 3px solid transparent; text-align: left;
-  display: block; overflow: hidden;
+/* 칸 안의 일정 목록 */
+.sched-day-list { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.sched-item {
+  display: flex; align-items: center; gap: 5px; min-width: 0;
+  height: 22px; padding: 0 7px; border-radius: 6px; cursor: pointer;
+  font-size: 12.5px; font-weight: 500; letter-spacing: -0.01em;
+  transition: filter .12s;
 }
-.sched-bar span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.sched-bar:hover { filter: brightness(0.96); }
-/* 주를 넘어 이어지는 막대는 잘린 쪽 모서리를 평평하게 둡니다. */
-.sched-bar.cont-l { border-top-left-radius: 0; border-bottom-left-radius: 0; border-left-width: 0; }
-.sched-bar.cont-r { border-top-right-radius: 0; border-bottom-right-radius: 0; }
+.sched-item:hover { filter: brightness(0.95); }
+.sched-item > span {
+  flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.sched-item .dot {
+  width: 6px; height: 6px; border-radius: 50%; background: currentColor; flex: none; opacity: .85;
+}
+.sched-item .cont { font-style: normal; font-size: 13px; line-height: 1; opacity: .55; flex: none; }
 
-/* 종류별 색 — 달력 막대, 필터 칩, 상세 목록이 같은 규칙을 씁니다. */
-.bar-work { background: var(--accent-wash); color: var(--accent-deep); border-left-color: var(--accent); }
-.bar-leave { background: var(--warn-wash); color: var(--warn); border-left-color: var(--warn); }
-.bar-etc { background: var(--surface-3); color: var(--fg-2); border-left-color: #94a3b8; }
-.bar-project { background: var(--ok-wash); color: var(--ok); border-left-color: var(--ok); }
-.bar-bid { background: var(--danger-wash); color: var(--danger); border-left-color: var(--danger); }
+.sched-more {
+  height: 20px; padding: 0 6px; margin-top: 1px; border: 0; background: none;
+  font: inherit; font-size: 11.5px; color: var(--fg-3); text-align: left; cursor: pointer;
+  border-radius: 5px;
+}
+.sched-more:hover { background: var(--surface-3); color: var(--fg-2); }
+
+/* 종류별 색 — 달력 칸, 필터 칩, 상세 목록이 같은 규칙을 씁니다. */
+.bar-work { background: var(--accent-wash); color: var(--accent-deep); }
+.bar-leave { background: var(--warn-wash); color: var(--warn); }
+.bar-etc { background: var(--surface-3); color: var(--fg-2); }
+.bar-project { background: var(--ok-wash); color: var(--ok); }
+.bar-bid { background: var(--danger-wash); color: var(--danger); }
 
 /* 필터 칩 — 꺼진 것은 색을 빼고 테두리만 남깁니다. */
 .sched-filters { display: flex; gap: 8px; flex-wrap: wrap; }

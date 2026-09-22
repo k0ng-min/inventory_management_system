@@ -1006,6 +1006,21 @@ export function seedIfEmpty() {
 
 seedIfEmpty();
 
+/**
+ * 사업장 하나는 반드시 있어야 합니다.
+ * 이 회사는 자재를 한 곳에 두고 현장으로 들고 나갑니다. 창고라는 개념이 따로
+ * 없어서, 화면은 창고를 묻지 않고 늘 이 한 곳을 씁니다.
+ * 사업장이 없으면 입고·재고조정·자재배정이 전부 막히므로 여기서 만들어 둡니다.
+ */
+function ensureDefaultSite() {
+  const count = get("SELECT COUNT(*) n FROM warehouses WHERE active = 1").n;
+  if (count > 0) return;
+  run("INSERT OR IGNORE INTO warehouses (id, name, location, manager, active) VALUES ('WH-HQ', ?, '', '', 1)",
+    setting("organization.name", "본사") + " 사업장");
+  console.log("  사업장이 없어 기본 사업장을 만들었습니다.");
+}
+ensureDefaultSite();
+
 // 기존 DB에는 카탈로그가 있어도 products와의 연결 열이 비어 있을 수 있습니다.
 // 함수는 공급처 행을 중복 생성하지 않으므로 시작할 때 안전하게 보정할 수 있습니다.
 tx(() => catalogFromLegacy());

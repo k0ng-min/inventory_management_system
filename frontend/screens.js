@@ -4209,7 +4209,7 @@ const CAL_LAYERS = [
   { key: "bid", label: "입찰 마감", adminOnly: true, off: true },
 ];
 
-const MAX_LANES = 4;          // 한 주에 겹쳐 보여 줄 줄 수. 넘치면 ＋N 으로 접습니다.
+const MAX_PER_DAY = 3;        // 한 칸에 보여 줄 일정 수. 넘치면 ＋N 으로 접습니다.
 
 /** 월 달력은 항상 6주 × 7일입니다. 앞뒤로 이웃 달이 물려 들어옵니다. */
 function monthWeeks(month) {
@@ -4233,42 +4233,29 @@ function monthWeeks(month) {
 }
 
 /**
- * 한 주 안에서 줄이 서로 겹치지 않게 칸(lane)을 배정합니다.
- * 긴 일정부터 위로 올려야 달력이 눈에 잘 들어옵니다.
+ * 그 날짜에 걸리는 일정을 모읍니다.
+ *
+ * 예전에는 여러 날 일정을 셀 위에 띄운 가로 막대 하나로 그렸는데, 막대가 날짜
+ * 숫자·다른 막대와 자리를 다투면서 겹쳐 보였습니다. 요즘 달력(구글·노션)처럼
+ * **칸마다 자기 일정만 쌓는** 방식으로 바꿉니다. 구조상 겹칠 수가 없습니다.
+ *
+ * 여러 날 일정은 칸마다 나오되, 시작·끝이 아닌 날은 화살표로 이어짐을 알립니다.
  */
-function layoutWeek(days, events) {
-  const weekStart = days[0].iso;
-  const weekEnd = days[6].iso;
-  const lanes = [];
-  const bars = [];
-  const hidden = new Map();
-
-  const inWeek = events
-    .filter((event) => event.end >= weekStart && event.start <= weekEnd)
+function dayEvents(iso, events) {
+  return events
+    .filter((event) => event.start <= iso && event.end >= iso)
+    .map((event) => ({
+      event,
+      first: event.start === iso,
+      last: event.end === iso,
+      span: event.start !== event.end,
+    }))
+    // 여러 날 일정을 위로, 그 다음 시작 시각 순으로.
     .sort((a, b) => {
-      if (a.start !== b.start) return a.start < b.start ? -1 : 1;
-      if (a.end !== b.end) return a.end > b.end ? -1 : 1;
-      return 0;
+      if (a.span !== b.span) return a.span ? -1 : 1;
+      if (a.event.start !== b.event.start) return a.event.start < b.event.start ? -1 : 1;
+      return String(a.event.title).localeCompare(String(b.event.title), "ko");
     });
-
-  for (const event of inWeek) {
-    const from = event.start <= weekStart ? 0 : days.findIndex((day) => day.iso === event.start);
-    const to = event.end >= weekEnd ? 6 : days.findIndex((day) => day.iso === event.end);
-
-    let lane = lanes.findIndex((slots) => slots.every((slot) => slot.to < from || slot.from > to));
-    if (lane === -1) { lanes.push([]); lane = lanes.length - 1; }
-
-    if (lane >= MAX_LANES) {
-      // 자리에 못 들어간 것은 날짜별 ＋N 으로만 알립니다.
-      for (let index = from; index <= to; index += 1) {
-        hidden.set(days[index].iso, (hidden.get(days[index].iso) || 0) + 1);
-      }
-      continue;
-    }
-    lanes[lane].push({ from, to });
-    bars.push({ event, lane, from, to, opensLeft: event.start >= weekStart, closesRight: event.end <= weekEnd });
-  }
-  return { bars, hidden, lanes: Math.min(lanes.length, MAX_LANES) };
 }
 
 function teamCalendar() {
@@ -4460,34 +4447,37 @@ function teamCalendar() {
     const { weeks } = bounds();
     const events = buildEvents();
 
-    const weekNodes = weeks.map((days) => {
-      const { bars, hidden, lanes } = layoutWeek(days, events);
-      const height = 30 + Math.max(1, lanes) * 24 + 8;
+    const weekNodes = weeks.map((days) => h("div.sched-week", {}, days.map((day) => {
+      const items = dayEvents(day.iso, events);
+      const shown = items.slice(0, MAX_PER_DAY);
+      const rest = items.length - shown.length;
 
-      return h("div.sched-week", { style: { height: `${height}px` } },
-        h("div.sched-week-days", {}, days.map((day) => h(
-          `button.sched-day${day.outside ? ".out" : ""}${day.iso === today() ? ".today" : ""}${day.iso === state.selected ? ".on" : ""}`,
-          {
-            onclick: () => { state.selected = day.iso; draw(); },
-            ondblclick: () => { if (editable()) openScheduleForm({ startDate: day.iso, endDate: day.iso }); },
-          },
-          h("span.n", { text: String(day.day) }),
-          hidden.get(day.iso) ? h("span.more", { text: `＋${hidden.get(day.iso)}` }) : null,
-        ))),
-        h("div.sched-week-bars", {}, bars.map((bar) => h(
-          `div.sched-bar.bar-${bar.event.layer}${bar.opensLeft ? "" : ".cont-l"}${bar.closesRight ? "" : ".cont-r"}`,
-          {
-            style: {
-              left: `calc(${(bar.from / 7) * 100}% + 6px)`,
-              width: `calc(${((bar.to - bar.from + 1) / 7) * 100}% - 12px)`,
-              top: `${bar.lane * 26}px`,
+      return h(
+        `div.sched-day${day.outside ? ".out" : ""}${day.iso === today() ? ".today" : ""}${day.iso === state.selected ? ".on" : ""}`,
+        {
+          onclick: () => { state.selected = day.iso; draw(); },
+          ondblclick: () => { if (editable()) openScheduleForm({ startDate: day.iso, endDate: day.iso }); },
+        },
+        h("div.sched-day-head", {}, h("span.n", { text: String(day.day) })),
+        h("div.sched-day-list", {}, ...[
+          ...shown.map(({ event, first, last, span }) => h(
+            `div.sched-item.bar-${event.layer}${span ? ".span" : ""}`,
+            {
+              title: `${event.title}${span ? ` (${event.start} ~ ${event.end})` : ""}`,
+              onclick: (clickEvent) => { clickEvent.stopPropagation(); openEvent(event); },
             },
-            title: `${bar.event.title}${bar.event.start === bar.event.end ? "" : ` (${bar.event.start} ~ ${bar.event.end})`}`,
-            onclick: (clickEvent) => { clickEvent.stopPropagation(); openEvent(bar.event); },
-          },
-          h("span", { text: bar.event.title }),
-        ))));
-    });
+            // 이어지는 일정은 어느 쪽으로 이어지는지 화살표로 알립니다.
+            span && !first ? h("i.cont", { text: "‹" }) : h("i.dot"),
+            h("span", { text: event.title }),
+            span && !last ? h("i.cont", { text: "›" }) : null,
+          )),
+          rest > 0
+            ? h("button.sched-more", {
+              onclick: (clickEvent) => { clickEvent.stopPropagation(); state.selected = day.iso; draw(); },
+            }, `＋${rest}개 더`)
+            : null,
+        ].filter(Boolean)));
+    })));
 
     const counts = { work: 0, leave: 0, etc: 0, project: 0, bid: 0 };
     for (const event of events) counts[event.layer] += 1;
@@ -4539,60 +4529,70 @@ function teamCalendar() {
 }
 
 export const MODULES = [
+  /* 메뉴 규칙 넷.
+     1. 한 화면은 한 곳에만 둔다.
+     2. 이름은 하는 일 그대로 — '마스터' 같은 말은 쓰지 않는다.
+     3. 묶음 제목은 꼭 필요할 때만 (권한이 갈리는 곳). 세 줄짜리 목록에
+        제목까지 붙이면 읽을 것만 늘어난다.
+     4. 자주 쓰는 순서로 — 찾기 → 사기 → 받기 → 쓰기. */
   {
     id: "home", name: "홈", groups: [{
       // 경영 수치는 사장 몫입니다. 직원은 '오늘 할 일' 과 일정표를 봅니다.
-      items: [["home.today", "오늘 할 일"], ["home.dashboard", "경영 현황", "admin"], ["home.calendar", "일정표"]],
+      items: [["home.today", "오늘 할 일"], ["home.calendar", "일정표"], ["home.dashboard", "경영 현황", "admin"]],
     }],
   },
   {
-    id: "inventory", name: "재고", groups: [
-      { name: "재고관리", items: [["inv.status", "재고현황"], ["inv.ledger", "재고수불부"], ["inv.adjust", "재고조정"], ["inv.allocation", "공사별 자재배정"], ["inv.transfer", "재고이동", "multisite"]] },
-      { name: "기준정보", items: [["base.warehouse", "창고등록"], ["base.catalog", "품목 마스터"]] },
+    id: "materials", name: "자재", groups: [{
+      items: [["pur.search", "자재 찾기·가격비교"], ["pur.quote", "견적 비교"],
+        ["base.catalog", "자재 목록"], ["base.import", "자재 채우기"], ["base.review", "규격 확인"]],
+    }],
+  },
+  {
+    id: "purchase", name: "구매", groups: [{
+      items: [["pur.request", "구매요청"], ["pur.order", "발주서"],
+        ["pur.receive", "입고 처리"], ["pur.receipts", "입고 내역"]],
+    }],
+  },
+  {
+    id: "inventory", name: "재고", groups: [{
+      items: [["inv.status", "재고 현황"], ["inv.ledger", "입출고 내역"], ["inv.adjust", "재고 조정"],
+        ["inv.allocation", "현장 자재배정"], ["base.product", "안전재고 설정"],
+        ["inv.transfer", "사업장 간 이동", "multisite"]],
+    }],
+  },
+  {
+    id: "project", name: "공사", groups: [{
+      items: [["base.project", "공사 목록"], ["prj.cost", "공사별 원가"], ["prj.receipt", "자재 영수증"]],
+    }],
+  },
+  {
+    id: "partner", name: "거래처", groups: [{
+      items: [["base.supplier", "공급처"], ["base.customer", "고객"], ["base.partners", "명부 일괄 등록"]],
+    }],
+  },
+  {
+    id: "sales", name: "매출", groups: [
+      { items: [["sal.order", "매출 등록"], ["sal.payment", "수금"], ["sal.status", "매출 현황"]] },
+      // 회계는 사장만 봅니다. 여기만 묶음 제목을 두어 권한이 갈리는 것을 알립니다.
+      { name: "회계", items: [["acc.ledger", "전표"], ["acc.fund", "자금 현황"]], adminOnly: ["acc.ledger", "acc.fund"] },
     ],
   },
   {
-    id: "materials", name: "자재", groups: [
-      { name: "전기자재 카탈로그", items: [["pur.search", "자재 카탈로그·가격비교"], ["base.catalog", "제품 마스터"], ["pur.quote", "비교·견적함"]] },
-      { name: "데이터 관리", items: [["base.import", "판매상품 등록"], ["base.review", "규격·매칭 검수", "master"]] },
-    ],
+    id: "bid", name: "입찰", need: "admin", groups: [{
+      items: [["bid.calendar", "입찰 달력"], ["bid.list", "공고 찾기"], ["bid.star", "관심 공고"]],
+    }],
   },
   {
-    id: "purchase", name: "구매", groups: [
-      { name: "구매관리", items: [["pur.quote", "견적 비교"], ["pur.request", "구매요청"], ["pur.order", "발주서"], ["pur.receive", "입고처리"], ["pur.receipts", "입고내역"]] },
-      { name: "기준정보", items: [["base.supplier", "공급처등록"], ["base.partners", "거래처 일괄 등록"], ["base.import", "공급처 품목 등록"], ["base.catalog", "품목 마스터"], ["base.review", "규격 검수"]] },
-    ],
+    id: "report", name: "분석", need: "admin", groups: [{
+      items: [["rpt.purchase", "구매 분석"], ["rpt.inventory", "재고 분석"]],
+    }],
   },
   {
-    id: "sales", name: "영업", groups: [
-      { name: "영업관리", items: [["sal.order", "매출등록"], ["sal.payment", "수금관리"], ["sal.status", "매출현황"]] },
-      { name: "기준정보", items: [["base.customer", "고객등록"]] },
-    ],
-  },
-  {
-    id: "project", name: "공사", groups: [
-      { name: "공사관리", items: [["base.project", "공사등록"], ["prj.cost", "공사별 원가"], ["prj.receipt", "작업별 영수증"], ["inv.allocation", "공사별 자재배정"]] },
-    ],
-  },
-  {
-    id: "accounting", name: "회계", need: "admin", groups: [
-      { name: "회계관리", items: [["acc.ledger", "전표 입력·조회"], ["acc.fund", "자금현황"]] },
-    ],
-  },
-  {
-    id: "bid", name: "입찰", need: "admin", groups: [
-      { name: "나라장터", items: [["bid.calendar", "입찰 캘린더"], ["bid.list", "입찰공고 조회"], ["bid.star", "관심공고"]] },
-    ],
-  },
-  {
-    id: "report", name: "분석", need: "admin", groups: [
-      { name: "경영분석", items: [["rpt.purchase", "구매분석"], ["rpt.inventory", "재고분석"], ["prj.cost", "공사수익"]] },
-    ],
-  },
-  {
-    id: "system", name: "설정", groups: [
-      { name: "시스템", items: [["sys.user", "사용자·권한"], ["sys.connector", "연동설정"], ["sys.company", "회사정보"], ["sys.audit", "변경이력"], ["sys.password", "비밀번호 변경"]], adminOnly: ["sys.user", "sys.connector", "sys.company"] },
-    ],
+    id: "system", name: "설정", groups: [{
+      items: [["sys.password", "비밀번호 변경"], ["sys.user", "사용자·권한"], ["sys.connector", "가격 소스 연동"],
+        ["sys.company", "회사정보"], ["base.warehouse", "사업장"], ["sys.audit", "변경 이력"]],
+      adminOnly: ["sys.user", "sys.connector", "sys.company", "base.warehouse"],
+    }],
   },
 ];
 
