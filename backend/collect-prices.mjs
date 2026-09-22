@@ -85,7 +85,14 @@ const termFor = (product) => String(product.spec_label || product.name || "")
 async function searchEnuri(page, term) {
   await page.goto(`https://www.enuri.com/search.jsp?keyword=${encodeURIComponent(term)}`,
     { waitUntil: "domcontentloaded", timeout: 40000 });
-  await page.waitForTimeout(3500);
+  await page.waitForTimeout(3000);
+
+  // 첫 화면에는 제휴 영역(쿠팡)만 뜹니다. 아래로 내려야 11번가·G마켓·옥션까지
+  // 지연 로딩됩니다. 내리지 않으면 한 몰만 긁고 비교가 되지 않습니다.
+  for (let step = 0; step < 6; step += 1) {
+    await page.mouse.wheel(0, 1400);
+    await page.waitForTimeout(700);
+  }
 
   return page.evaluate(() => {
     const out = [];
@@ -98,10 +105,12 @@ async function searchEnuri(page, term) {
       const name = text.split("\n").map((line) => line.trim())
         .find((line) => line.length > 6 && !/원$/.test(line));
       if (!name) continue;
-      const mall = (block.querySelector("img[alt*='로고']")?.getAttribute("alt") || "")
-        .replace(/\s*로고\s*/, "").trim();
+      const alt = [...block.querySelectorAll("img[alt]")]
+        .map((image) => image.getAttribute("alt") || "")
+        .find((value) => /로고/.test(value)) || "";
+      const mall = alt.replace(/\s*로고\s*/, "").trim();
       out.push({ name: name.slice(0, 120), price: Number(priceMatch[1].replace(/,/g, "")), mall: mall || "에누리" });
-      if (out.length >= 12) break;
+      if (out.length >= 30) break;
     }
     return out;
   });
