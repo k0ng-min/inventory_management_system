@@ -429,6 +429,38 @@ CREATE TABLE IF NOT EXISTS catalog_imports (
   user TEXT
 );
 
+-- 판매처 상품을 제품 마스터에 자동 확정하지 못했을 때 관리자가 판정하는 큐입니다.
+CREATE TABLE IF NOT EXISTS product_match_reviews (
+  id TEXT PRIMARY KEY,
+  supplier_product_id TEXT,
+  candidate_product_id TEXT,
+  proposed_product_id TEXT,
+  reason TEXT NOT NULL,
+  score REAL NOT NULL DEFAULT 0,
+  evidence TEXT NOT NULL DEFAULT '{}',
+  status TEXT NOT NULL DEFAULT 'pending', -- pending | approved | rejected | remapped
+  resolved_by TEXT,
+  resolved_at TEXT,
+  created_at TEXT NOT NULL
+);
+
+-- 외부 이동 전 구매 후보를 남깁니다. 이후 기존 구매요청/발주 흐름으로 승격할 수 있습니다.
+CREATE TABLE IF NOT EXISTS purchase_candidates (
+  id TEXT PRIMARY KEY,
+  product_id TEXT NOT NULL REFERENCES catalog_products(id),
+  supplier_product_id TEXT REFERENCES supplier_products(id),
+  quantity REAL NOT NULL DEFAULT 1,
+  expected_total REAL,
+  status TEXT NOT NULL DEFAULT 'candidate', -- candidate | requested | purchased | cancelled
+  product_url TEXT,
+  created_by TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_match_review_status ON product_match_reviews(status, created_at);
+CREATE INDEX IF NOT EXISTS idx_purchase_candidate_status ON purchase_candidates(status, created_at);
+
 CREATE INDEX IF NOT EXISTS idx_cat_category ON catalog_products(category);
 CREATE INDEX IF NOT EXISTS idx_sp_product ON supplier_products(product_id);
 CREATE INDEX IF NOT EXISTS idx_sp_supplier ON supplier_products(supplier_id);
@@ -456,6 +488,22 @@ ensureColumn("purchase_requests", "preferred_supplier_id", "TEXT");
 ensureColumn("purchase_requests", "supplier_product_id", "TEXT");
 ensureColumn("purchase_requests", "quoted_unit_price", "REAL");
 ensureColumn("catalog_products", "certification", "TEXT");
+ensureColumn("catalog_products", "brand", "TEXT");
+ensureColumn("catalog_products", "subcategory", "TEXT");
+ensureColumn("catalog_products", "series", "TEXT");
+ensureColumn("catalog_products", "model", "TEXT");
+ensureColumn("catalog_products", "product_code", "TEXT");
+ensureColumn("catalog_products", "normalized_name", "TEXT");
+ensureColumn("catalog_products", "image_url", "TEXT");
+ensureColumn("catalog_products", "manufacturer_url", "TEXT");
+ensureColumn("catalog_products", "datasheet_url", "TEXT");
+ensureColumn("catalog_products", "catalog_url", "TEXT");
+ensureColumn("catalog_products", "certifications", "TEXT NOT NULL DEFAULT '[]'");
+ensureColumn("catalog_products", "status", "TEXT NOT NULL DEFAULT 'active'");
+ensureColumn("catalog_products", "source", "TEXT NOT NULL DEFAULT 'legacy'");
+ensureColumn("catalog_products", "source_updated_at", "TEXT");
+ensureColumn("catalog_products", "last_synced_at", "TEXT");
+ensureColumn("catalog_products", "manual_fields", "TEXT NOT NULL DEFAULT '[]'");
 ensureColumn("goods_receipts", "line_id", "TEXT");
 ensureColumn("goods_receipts", "batch_id", "TEXT");
 // 불량·오배송은 "받긴 받았는데 못 쓰는" 수량입니다. 재고에는 넣지 않고 기록만 남깁니다.
@@ -497,15 +545,45 @@ function migrateOrderLines() {
 migrateOrderLines();
 ensureColumn("supplier_products", "price_basis", "TEXT NOT NULL DEFAULT 'quote'");
 ensureColumn("supplier_products", "product_url", "TEXT");
+ensureColumn("supplier_products", "external_product_id", "TEXT");
+ensureColumn("supplier_products", "normalized_title", "TEXT");
+ensureColumn("supplier_products", "manufacturer", "TEXT");
+ensureColumn("supplier_products", "model", "TEXT");
+ensureColumn("supplier_products", "raw_specification", "TEXT");
+ensureColumn("supplier_products", "parsed_specifications", "TEXT NOT NULL DEFAULT '{}'");
+ensureColumn("supplier_products", "original_price", "INTEGER");
+ensureColumn("supplier_products", "vat_included", "INTEGER");
+ensureColumn("supplier_products", "stock_status", "TEXT");
+ensureColumn("supplier_products", "lead_time", "TEXT");
+ensureColumn("supplier_products", "image_url", "TEXT");
+ensureColumn("supplier_products", "last_checked_at", "TEXT");
+ensureColumn("supplier_products", "match_confidence", "REAL NOT NULL DEFAULT 0");
+ensureColumn("supplier_products", "match_status", "TEXT NOT NULL DEFAULT 'review'");
+ensureColumn("supplier_products", "other_cost", "INTEGER NOT NULL DEFAULT 0");
+ensureColumn("price_history", "supplier_product_id", "TEXT");
+ensureColumn("price_history", "shipping_cost", "INTEGER NOT NULL DEFAULT 0");
+ensureColumn("price_history", "stock_status", "TEXT");
+ensureColumn("price_history", "vat_included", "INTEGER");
+ensureColumn("price_history", "checked_at", "TEXT");
+ensureColumn("connectors", "last_attempt_at", "TEXT");
+ensureColumn("connectors", "last_success_at", "TEXT");
+ensureColumn("connectors", "last_error", "TEXT");
+ensureColumn("connectors", "policy_status", "TEXT NOT NULL DEFAULT 'review_required'");
+ensureColumn("connectors", "source_grade", "TEXT");
+ensureColumn("connectors", "next_sync_at", "TEXT");
+ensureColumn("connectors", "failure_count", "INTEGER NOT NULL DEFAULT 0");
 db.exec("CREATE INDEX IF NOT EXISTS idx_products_catalog ON products(catalog_product_id)");
+db.exec("CREATE INDEX IF NOT EXISTS idx_catalog_product_code ON catalog_products(product_code)");
+db.exec("CREATE INDEX IF NOT EXISTS idx_catalog_model ON catalog_products(manufacturer, model)");
+db.exec("CREATE INDEX IF NOT EXISTS idx_supplier_external ON supplier_products(supplier_id, external_product_id)");
 
 // 가격비교 소스. seedIfEmpty() 는 빈 DB 에서만 돌기 때문에, 이미 쓰고 있는 DB 에도
 // 새 연동이 나타나도록 여기서 한 번만 등록합니다. 켜는 것은 관리자 몫입니다.
 for (const connector of [
   ["mall-scrape", "온라인 자재몰 수집", "scrape", "자재몰 상품목록 — 품명·규격·배송비",
-    "https://jajekorea.com", "", 1, "정상"],
+    "https://jajekorea.com", "", 0, "정책 확인 전 중지"],
   ["naver-shop", "네이버 쇼핑 검색", "rest", "검색어 한 번에 쇼핑몰별 최저가",
-    "https://openapi.naver.com/v1/search/shop.json", "NAVER_CLIENT_ID", 1, "환경변수 필요"],
+    "https://openapi.naver.com/v1/search/shop.json", "NAVER_CLIENT_ID", 0, "2026-07-31 서비스 종료"],
   ["coupang-partners", "쿠팡 파트너스", "rest", "쿠팡 판매가 (제휴 승인 필요)",
     "https://api-gateway.coupang.com", "COUPANG_ACCESS_KEY", 0, "제휴 승인 필요"],
   ["ali-open", "알리익스프레스 오픈API", "rest", "해외 직구 시세 (관세·납기 별도)",
@@ -516,6 +594,12 @@ for (const connector of [
        (id, name, type, purpose, base_url, secret_env, enabled, status, last_sync_at)
        VALUES (?,?,?,?,?,?,?,?,NULL)`).run(...connector);
 }
+
+// 조사 결과가 기존 설치 DB에도 즉시 반영되도록 위험한 기본 연동은 강제로 끕니다.
+db.prepare("UPDATE connectors SET enabled = 0, status = ?, policy_status = ?, source_grade = ? WHERE id = ?")
+  .run("정책 확인 전 중지", "permission_required", "C", "mall-scrape");
+db.prepare("UPDATE connectors SET enabled = 0, status = ?, policy_status = ?, source_grade = ? WHERE id = ?")
+  .run("2026-07-31 서비스 종료", "retired", "E", "naver-shop");
 
 /* ------------------------------------------------------------------ */
 /* query helpers                                                       */

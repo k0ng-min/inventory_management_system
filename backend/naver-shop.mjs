@@ -32,13 +32,11 @@ export function naverStatus() {
   return {
     enabled: Boolean(connector?.enabled),
     keyConfigured,
-    live: Boolean(connector?.enabled && keyConfigured),
+    live: false,
+    retired: true,
+    sourceGrade: "E",
     lastSyncAt: connector?.last_sync_at || null,
-    reason: !connector?.enabled
-      ? "설정 > 연동설정에서 '네이버 쇼핑 검색'을 켜 주세요."
-      : !keyConfigured
-        ? "NAVER_CLIENT_ID / NAVER_CLIENT_SECRET 환경변수가 설정되지 않았습니다."
-        : null,
+    reason: "네이버 쇼핑 검색 Open API가 2026-07-31 종료되어 신규 수집에 사용하지 않습니다.",
   };
 }
 

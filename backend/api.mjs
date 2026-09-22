@@ -17,7 +17,7 @@ import {
 } from "./quotes.mjs";
 import { importPartners, reviewQueue, resolveProduct, retireProduct } from "./partners.mjs";
 import { ingestSupplierCatalog, rowsFromCsv } from "./ingest.mjs";
-import { CATEGORIES } from "./catalog.mjs";
+import { CATEGORIES, CATEGORY_TREE } from "./catalog.mjs";
 import { shopStatus, probe as g2bProbe, syncShoppingMall, SHOP_OPERATIONS } from "./g2b-shop.mjs";
 import { supplierRestStatus, syncSupplierRest } from "./supplier-rest.mjs";
 import { mallStatus, syncMall, fetchCategories, MALLS } from "./mall-scrape.mjs";
@@ -52,14 +52,44 @@ function parseCookies(request) {
     }));
 }
 
+/**
+ * 요청 본문을 읽습니다.
+ *
+ * 조각을 문자열로 이어 붙이면(raw += chunk) 조각마다 따로 UTF-8 로 풀기 때문에,
+ * 한글처럼 여러 바이트인 글자가 조각 경계에 걸리면 글자가 깨집니다.
+ * 바이트로 모은 뒤 한 번에 풉니다.
+ */
 async function readBody(request) {
-  let raw = "";
+  const chunks = [];
+  let size = 0;
   for await (const chunk of request) {
-    raw += chunk;
-    if (raw.length > 2_000_000) throw new HttpError(413, "요청 데이터가 너무 큽니다.");
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    size += buffer.length;
+    if (size > 2_000_000) throw new HttpError(413, "요청 데이터가 너무 큽니다.");
+    chunks.push(buffer);
   }
-  if (!raw) return {};
-  try { return JSON.parse(raw); } catch { throw new HttpError(400, "잘못된 JSON 형식입니다."); }
+  if (!size) return {};
+  const raw = Buffer.concat(chunks).toString("utf8");
+
+  let parsed;
+  try { parsed = JSON.parse(raw); } catch { throw new HttpError(400, "잘못된 JSON 형식입니다."); }
+
+  // UTF-8 이 아닌 글자를 보내면 복구 불가능한 (U+FFFD) 로 바뀝니다.
+  // 깨진 채로 저장해 두면 나중에 되살릴 수 없으므로 문 앞에서 막습니다.
+  if (hasBrokenText(parsed)) {
+    throw new HttpError(400, "글자가 깨진 요청입니다. 보내는 쪽 문자 인코딩을 UTF-8 로 맞춰 주세요.");
+  }
+  return parsed;
+}
+
+/** 값 어딘가에 복구 불가능한 깨진 글자가 있는지 봅니다. */
+function hasBrokenText(value, depth = 0) {
+  if (depth > 6) return false;
+  // 소스에 깨진 글자를 직접 적지 않고 코드포인트로 씁니다.
+  if (typeof value === "string") return value.includes(String.fromCharCode(0xFFFD));
+  if (Array.isArray(value)) return value.some((item) => hasBrokenText(item, depth + 1));
+  if (value && typeof value === "object") return Object.values(value).some((item) => hasBrokenText(item, depth + 1));
+  return false;
 }
 
 const publicUser = (user) => user && ({
@@ -1136,6 +1166,45 @@ export async function handleApi(request, response, url) {
   if (method === "GET" && path === "/api/catalog/review") {
     return json(response, 200, reviewQueue());
   }
+  if (method === "GET" && path === "/api/catalog/matches/review") {
+    requireRole(user, "master");
+    return json(response, 200, all(`SELECT r.*, sp.raw_name, sp.manufacturer supplier_manufacturer,
+        sp.model supplier_model, sp.product_url, s.name supplier_name,
+        c.name candidate_name, c.manufacturer candidate_manufacturer, c.model candidate_model
+      FROM product_match_reviews r
+      LEFT JOIN supplier_products sp ON sp.id = r.supplier_product_id
+      LEFT JOIN suppliers s ON s.id = sp.supplier_id
+      LEFT JOIN catalog_products c ON c.id = r.candidate_product_id
+      WHERE r.status = 'pending' ORDER BY r.score DESC, r.created_at DESC LIMIT 200`));
+  }
+  if (method === "PUT" && /^\/api\/catalog\/matches\/[^/]+$/.test(path)) {
+    requireRole(user, "master");
+    const review = get("SELECT * FROM product_match_reviews WHERE id = ?", seg(url, 4));
+    if (!review) notFound("매칭 검수 항목을 찾을 수 없습니다.");
+    const decision = str(body.decision);
+    if (!["approve", "remap", "reject"].includes(decision)) bad("approve, remap, reject 중 하나를 선택해 주세요.");
+    const targetId = decision === "remap" ? str(body.productId) : review.proposed_product_id;
+    if (decision !== "reject" && !get("SELECT id FROM catalog_products WHERE id = ? AND active = 1", targetId)) {
+      bad("연결할 제품 마스터를 찾을 수 없습니다.");
+    }
+    tx(() => {
+      if (decision !== "reject" && review.supplier_product_id) {
+        const seller = get("SELECT supplier_id FROM supplier_products WHERE id = ?", review.supplier_product_id);
+        const clash = seller && get("SELECT id FROM supplier_products WHERE product_id = ? AND supplier_id = ? AND id <> ?",
+          targetId, seller.supplier_id, review.supplier_product_id);
+        if (clash) bad("해당 판매처가 이미 이 제품에 연결되어 있습니다. 기존 판매상품을 먼저 정리해 주세요.");
+        run("UPDATE supplier_products SET product_id = ?, match_confidence = 1, match_status = 'manual_verified' WHERE id = ?",
+          targetId, review.supplier_product_id);
+      } else if (review.supplier_product_id) {
+        run("UPDATE supplier_products SET match_status = 'rejected' WHERE id = ?", review.supplier_product_id);
+      }
+      run(`UPDATE product_match_reviews SET status = ?, proposed_product_id = ?, resolved_by = ?, resolved_at = ? WHERE id = ?`,
+        decision === "approve" ? "approved" : decision === "remap" ? "remapped" : "rejected",
+        targetId || null, user.name, nowIso(), review.id);
+    });
+    auditLog(user.name, "기준정보", "동일제품 매칭 검수", `${review.id} / ${decision} / ${targetId || "-"}`);
+    return json(response, 200, { ok: true });
+  }
   if (method === "PUT" && /^\/api\/catalog\/products\/[^/]+\/resolve$/.test(path)) {
     requireRole(user, "master");
     return json(response, 200, resolveProduct(seg(url, 4), body, user.name));
@@ -1189,10 +1258,20 @@ export async function handleApi(request, response, url) {
     return json(response, 200, CATEGORIES);
   }
 
+  if (method === "GET" && path === "/api/catalog/tree") {
+    return json(response, 200, CATEGORY_TREE);
+  }
+
   if (method === "GET" && path === "/api/catalog/search") {
+    const specFilters = {};
+    for (const [key, value] of url.searchParams.entries()) {
+      if (key.startsWith("spec.") && value) specFilters[key.slice(5)] = value;
+    }
     const result = searchProducts({
       query: url.searchParams.get("q") || "",
       category: url.searchParams.get("category") || "",
+      manufacturer: url.searchParams.get("manufacturer") || "",
+      specFilters,
       sort: url.searchParams.get("sort") || "match",
       inStockOnly: url.searchParams.get("inStock") === "1",
       limit: Math.min(200, Number(url.searchParams.get("limit")) || 60),
@@ -1225,6 +1304,41 @@ export async function handleApi(request, response, url) {
       detail.pricesHidden = true;
     }
     return json(response, 200, detail);
+  }
+
+  if (method === "GET" && path === "/api/purchase-candidates") {
+    requireRole(user, "purchasing");
+    return json(response, 200, all(`SELECT pc.*, c.name product_name, c.manufacturer,
+        s.name supplier_name, sp.price, sp.shipping, sp.stock_status, sp.lead_time
+      FROM purchase_candidates pc
+      JOIN catalog_products c ON c.id = pc.product_id
+      LEFT JOIN supplier_products sp ON sp.id = pc.supplier_product_id
+      LEFT JOIN suppliers s ON s.id = sp.supplier_id
+      ORDER BY pc.created_at DESC LIMIT 200`));
+  }
+
+  if (method === "POST" && path === "/api/purchase-candidates") {
+    requireRole(user, "purchasing");
+    const productId = str(body.productId);
+    const supplierProductId = str(body.supplierProductId) || null;
+    const quantity = Math.max(1, num(body.quantity) || 1);
+    const product = get("SELECT id FROM catalog_products WHERE id = ? AND active = 1", productId);
+    if (!product) bad("제품을 찾을 수 없습니다.");
+    const offer = supplierProductId
+      ? get("SELECT * FROM supplier_products WHERE id = ? AND product_id = ? AND active = 1", supplierProductId, productId)
+      : null;
+    if (supplierProductId && !offer) bad("판매상품을 찾을 수 없습니다.");
+    const subtotal = offer ? offer.price * quantity : null;
+    const expectedTotal = offer ? subtotal + (offer.shipping || 0) + (offer.other_cost || 0)
+      + (offer.vat_included === 0 ? Math.round(subtotal * 0.1) : 0) : null;
+    const id = newId("PC");
+    const stamp = nowIso();
+    run(`INSERT INTO purchase_candidates
+      (id, product_id, supplier_product_id, quantity, expected_total, status, product_url, created_by, created_at, updated_at)
+      VALUES (?,?,?,?,?,'candidate',?,?,?,?)`, id, productId, supplierProductId, quantity, expectedTotal,
+      str(body.productUrl) || offer?.product_url || null, user.name, stamp, stamp);
+    auditLog(user.name, "구매", "구매 후보 등록", `${productId} / ${supplierProductId || "-"} / ${quantity}`);
+    return json(response, 201, get("SELECT * FROM purchase_candidates WHERE id = ?", id));
   }
 
   // 업체별 단가는 조회입니다. 쓰기 권한과 묶지 않습니다.
@@ -1328,6 +1442,19 @@ export async function handleApi(request, response, url) {
   // 화면이 소스 상태를 한 번에 그리도록 묶어서 돌려줍니다.
   if (method === "GET" && path === "/api/catalog/sources") {
     return json(response, 200, {
+      policy: {
+        priority: ["official_api", "official_feed", "csv_excel_xml_json", "public_catalog", "approved_public_page", "manual"],
+        manufacturers: [
+          { id: "ls-electric", name: "LS ELECTRIC", grade: "B/C", status: "catalog_available", method: "공식 카탈로그·Product Finder (자동수집은 허용 확인 후)" },
+          { id: "schneider", name: "Schneider Electric Korea", grade: "D→A", status: "partner_onboarding", method: "공식 Product Catalog API 제휴 승인" },
+          { id: "ls-cable", name: "LS전선", grade: "B", status: "catalog_available", method: "공식 PDF 카탈로그" },
+          { id: "taihan", name: "대한전선", grade: "B", status: "catalog_available", method: "공식 PDF 카탈로그" },
+          { id: "g2b-shopping", name: "나라장터 종합쇼핑몰", grade: "A", status: "official_api", method: "공공데이터포털 공식 REST API" },
+        ],
+      },
+      connectors: all(`SELECT id, name, type AS kind, enabled, status, last_sync_at, last_attempt_at,
+          last_success_at, last_error, policy_status, source_grade, next_sync_at, failure_count
+        FROM connectors ORDER BY name`),
       mall: { ...mallStatus(), kind: "scrape", label: "온라인 자재몰 수집" },
       naver: { ...naverStatus(), kind: "api", label: "네이버 쇼핑 검색" },
       coupang: { ...coupangStatus(), kind: "api", label: "쿠팡 파트너스" },
@@ -1343,6 +1470,8 @@ export async function handleApi(request, response, url) {
 
   // 카테고리는 몰 개편에 따라 바뀌므로 사이트에서 직접 읽어 옵니다.
   if (method === "GET" && path === "/api/catalog/mall/categories") {
+    const status = mallStatus();
+    if (!status.live) return json(response, 200, []);
     const mallId = url.searchParams.get("mallId") || MALLS[0]?.id;
     return json(response, 200, await fetchCategories(mallId));
   }
@@ -1656,6 +1785,12 @@ export async function handleApi(request, response, url) {
       const id = seg(url, 4);
       const connector = get("SELECT * FROM connectors WHERE id = ?", id);
       if (!connector) notFound("연동 소스를 찾을 수 없습니다.");
+      if (connector.policy_status === "retired") {
+        throw new HttpError(422, "서비스가 종료된 데이터 소스입니다.");
+      }
+      if (connector.policy_status === "permission_required") {
+        throw new HttpError(422, "자동수집 전 판매처의 서면 허용 또는 제휴 승인이 필요합니다.");
+      }
       if (connector.secret_env && !process.env[connector.secret_env]) {
         throw new HttpError(422, `${connector.secret_env} 환경변수가 설정되지 않았습니다.`);
       }

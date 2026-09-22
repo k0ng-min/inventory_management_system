@@ -20,3 +20,7 @@ backend/erp.db-shm
 
 # 기획 검토용 원본(기획제안서 PDF·캡처 6.8MB). 산출물이지 소스가 아닙니다.
 .docx-review/
+
+# 화면 캡처·데이터 백업은 저장소에 올리지 않습니다.
+image.png
+*-backup.json

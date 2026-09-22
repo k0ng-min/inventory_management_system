@@ -199,7 +199,9 @@ async function showApp(user, organization) {
   renderModuleBar();
 
   const requested = location.hash.slice(1);
-  const initial = SCREENS[requested] && screenAllowed(requested) ? requested : "home.dashboard";
+  // 사장은 경영 현황, 직원은 오늘 할 일로 들어옵니다.
+  const landing = screenAllowed("home.dashboard") ? "home.dashboard" : "home.today";
+  const initial = SCREENS[requested] && screenAllowed(requested) ? requested : landing;
   selectModule(MODULES.find((module) => module.groups.some((group) => group.items.some(([id]) => id === initial)))?.id || "home", false);
   await openTab(initial);
   refreshBadges();

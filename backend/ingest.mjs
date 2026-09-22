@@ -8,7 +8,7 @@
                                         →  price_history 기록
    ========================================================================== */
 
-import { run, get, tx, nowIso, today, auditLog, newId } from "./db.mjs";
+import { run, get, all, tx, nowIso, today, auditLog, newId } from "./db.mjs";
 import { parseSpec, specKey, specLabel, canonicalName, parseCerts, CATEGORIES } from "./catalog.mjs";
 
 /* ---------- 입력 정규화 ---------------------------------------------------- */
@@ -52,7 +52,9 @@ export function parseLeadDays(value) {
 /** 업체마다 엑셀 헤더가 달라서, 흔한 표기를 넓게 받아들입니다. */
 const HEADER_ALIASES = {
   name: ["품명", "품목명", "제품명", "상품명", "규격명", "name", "product", "item"],
-  sku: ["품번", "코드", "제품코드", "상품코드", "sku", "code", "모델", "모델명"],
+  productCode: ["제조사제품코드", "공식제품코드", "product_code", "productcode"],
+  model: ["모델번호", "모델명", "model", "modelnumber"],
+  sku: ["품번", "코드", "제품코드", "상품코드", "sku", "code"],
   manufacturer: ["제조사", "메이커", "brand", "maker", "manufacturer"],
   category: ["분류", "품목종류", "카테고리", "category"],
   unit: ["단위", "판매단위", "규격단위", "unit"],
@@ -62,6 +64,10 @@ const HEADER_ALIASES = {
   moq: ["최소수량", "최소주문", "moq"],
   lead: ["납기", "리드타임", "배송", "leadtime", "lead"],
   stock: ["재고", "보유재고", "stock"],
+  vatIncluded: ["부가세포함", "vat포함", "vatincluded"],
+  originalPrice: ["정가", "소비자가", "originalprice"],
+  rawSpecification: ["상세규격", "원문규격", "specification", "spec"],
+  imageUrl: ["이미지", "이미지url", "image", "imageurl"],
 };
 
 const squash = (text) => String(text || "").toLowerCase().replace(/[\s_()[\]/-]/g, "");
@@ -117,14 +123,53 @@ export function parseCsv(text) {
  * 한 행을 제품 마스터에 붙입니다.
  * 반환: { productId, status: 'matched' | 'created', confidence }
  */
-function attachProduct(input) {
+const normalized = (value) => String(value || "").toUpperCase()
+  .replace(/LS산전/g, "LS ELECTRIC").replace(/SCHNEIDER ELECTRIC/g, "SCHNEIDER")
+  .replace(/[^0-9A-Z가-힣]+/g, "").trim();
+
+const nameSimilarity = (left, right) => {
+  const tokens = (value) => new Set(String(value || "").toUpperCase().match(/[0-9A-Z가-힣]+/g) || []);
+  const a = tokens(left); const b = tokens(right);
+  if (!a.size || !b.size) return 0;
+  const common = [...a].filter((token) => b.has(token)).length;
+  return common / new Set([...a, ...b]).size;
+};
+
+function attachProduct(input, source) {
   const parsed = parseSpec(input.name, input.category);
   const key = specKey(parsed.category, parsed.specs);
   const definition = CATEGORIES[parsed.category] || CATEGORIES.etc;
 
   const certs = parseCerts(input.name);
 
-  const existing = get("SELECT * FROM catalog_products WHERE spec_key = ?", key);
+  let existing = input.productCode
+    ? get("SELECT * FROM catalog_products WHERE product_code IS NOT NULL AND UPPER(product_code) = UPPER(?) AND active = 1", input.productCode)
+    : null;
+  let matchConfidence = existing ? 0.99 : 0;
+  let matchReason = existing ? "manufacturer_product_code" : null;
+  if (!existing && input.model) {
+    const modelMatches = get("SELECT COUNT(*) n, MIN(id) id FROM catalog_products WHERE model IS NOT NULL AND UPPER(model) = UPPER(?) AND active = 1", input.model);
+    if (modelMatches?.n === 1) {
+      existing = get("SELECT * FROM catalog_products WHERE id = ?", modelMatches.id);
+      matchConfidence = 0.97;
+      matchReason = "exact_model";
+    }
+  }
+  if (!existing && input.model && input.manufacturer) {
+    existing = all(`SELECT * FROM catalog_products
+      WHERE model IS NOT NULL AND UPPER(model) = UPPER(?) AND manufacturer IS NOT NULL AND active = 1`, input.model)
+      .find((row) => normalized(row.manufacturer) === normalized(input.manufacturer));
+    if (existing) { matchConfidence = 0.94; matchReason = "manufacturer_model"; }
+  }
+  if (!existing) {
+    const specCandidate = get("SELECT * FROM catalog_products WHERE spec_key = ? AND active = 1", key);
+    const conflictingMaker = specCandidate?.manufacturer && input.manufacturer
+      && normalized(specCandidate.manufacturer) !== normalized(input.manufacturer);
+    if (!conflictingMaker) {
+      existing = specCandidate;
+      if (existing) { matchConfidence = parsed.confidence >= 1 ? 0.9 : 0.78; matchReason = "category_key_specifications"; }
+    }
+  }
   if (existing) {
     // 제조사·인증이 비어 있었다면 채워 줍니다. 업체마다 이름에 적는 정보가 달라서,
     // 한 업체가 빠뜨린 것을 다른 업체 이름에서 얻는 일이 흔합니다.
@@ -133,25 +178,40 @@ function attachProduct(input) {
         existing.manufacturer || input.manufacturer || null,
         existing.certification || certs || null, nowIso(), existing.id);
     }
-    return { productId: existing.id, status: "matched", confidence: parsed.confidence, category: parsed.category };
+    return { productId: existing.id, status: "matched", confidence: matchConfidence, reason: matchReason, category: parsed.category };
   }
 
-  const id = `P-${key.replace(/[^A-Za-z0-9]+/g, "").slice(0, 18).toUpperCase()}-${Math.random().toString(36).slice(2, 6)}`;
+  const uniqueKey = get("SELECT id FROM catalog_products WHERE spec_key = ?", key)
+    ? `${key}|MFR:${normalized(input.manufacturer) || "UNKNOWN"}|${normalized(input.model) || Math.random().toString(36).slice(2, 8)}`
+    : key;
+  const id = `P-${uniqueKey.replace(/[^A-Za-z0-9]+/g, "").slice(0, 18).toUpperCase()}-${Math.random().toString(36).slice(2, 6)}`;
+  const official = /^(manufacturer|official|g2b)/i.test(source || "");
+  const suggestion = all("SELECT id, name FROM catalog_products WHERE category = ? AND active = 1", parsed.category)
+    .map((row) => ({ ...row, score: nameSimilarity(input.name, row.name) }))
+    .filter((row) => row.score >= 0.55)
+    .sort((a, b) => b.score - a.score)[0] || null;
   run(`INSERT INTO catalog_products
          (id, spec_key, category, name, specs, spec_label, manufacturer, base_unit,
-          safety_stock, barcode, note, certification, confidence, active, created_at, updated_at)
-       VALUES (?,?,?,?,?,?,?,?,0,NULL,NULL,?,?,1,?,?)`,
-    id, key, parsed.category,
+          safety_stock, barcode, note, certification, confidence, active, created_at, updated_at,
+          brand, model, product_code, normalized_name, certifications, status, source, last_synced_at)
+       VALUES (?,?,?,?,?,?,?,?,0,NULL,NULL,?,?,1,?,?,?,?,?,?,?,?,?,?)`,
+    id, uniqueKey, parsed.category,
     canonicalName(parsed.category, parsed.specs, null) || input.name,
     JSON.stringify(parsed.specs), specLabel(parsed.category, parsed.specs),
     input.manufacturer || null, definition.baseUnit,
-    certs, parsed.confidence, nowIso(), nowIso());
+    certs, parsed.confidence, nowIso(), nowIso(), input.manufacturer || null, input.model || null,
+    input.productCode || null, normalized(input.name), JSON.stringify(certs ? [certs] : []),
+    official ? "active" : "pending_review", source || "supplier", nowIso());
 
-  return { productId: id, status: "created", confidence: parsed.confidence, category: parsed.category };
+  return {
+    productId: id, status: "created", confidence: official ? 0.99 : Math.min(0.79, parsed.confidence),
+    reason: suggestion ? "name_similarity_review" : "new_supplier_master",
+    suggestedCandidateId: suggestion?.id || null, nameSimilarity: suggestion?.score || 0, category: parsed.category,
+  };
 }
 
 /** 공급처 판매정보를 넣거나 갱신하고, 가격이 바뀌면 이력을 남깁니다. */
-function upsertSupplierProduct(productId, supplierId, input, source) {
+function upsertSupplierProduct(productId, supplierId, input, source, match) {
   const previous = get("SELECT * FROM supplier_products WHERE product_id = ? AND supplier_id = ?", productId, supplierId);
   const unitPrice = input.unitQty > 0 ? input.price / input.unitQty : input.price;
   const priceBasis = input.priceBasis || (/^g2b/i.test(source) ? "contract" : /naver|shop/i.test(source) ? "retail" : "quote");
@@ -160,33 +220,55 @@ function upsertSupplierProduct(productId, supplierId, input, source) {
     run(`UPDATE supplier_products SET
            supplier_sku = ?, raw_name = ?, sell_unit = ?, unit_qty = ?, price = ?,
            shipping = ?, moq = ?, lead_days = ?, stock = ?, quoted_at = ?, source = ?,
-           price_basis = ?, product_url = ?, active = 1
+           price_basis = ?, product_url = ?, external_product_id = ?, normalized_title = ?,
+           manufacturer = ?, model = ?, raw_specification = ?, parsed_specifications = ?,
+           original_price = ?, vat_included = ?, stock_status = ?, lead_time = ?, image_url = ?,
+           last_checked_at = ?, match_confidence = ?, match_status = ?, active = 1
          WHERE id = ?`,
       input.sku || previous.supplier_sku, input.name, input.unit, input.unitQty, input.price,
       input.shipping ?? previous.shipping, input.moq ?? previous.moq,
       input.leadDays ?? previous.lead_days, input.stock ?? previous.stock,
-       input.quotedAt || today(), source, priceBasis, input.url || previous.product_url, previous.id);
+      input.quotedAt || today(), source, priceBasis, input.url || previous.product_url,
+      input.sku || previous.external_product_id, normalized(input.name), input.manufacturer || previous.manufacturer,
+      input.model || previous.model, input.rawSpecification || previous.raw_specification,
+      JSON.stringify(parseSpec(input.name, input.category).specs), input.originalPrice ?? previous.original_price,
+      input.vatIncluded ?? previous.vat_included, input.stockStatus || previous.stock_status,
+      input.lead || previous.lead_time, input.imageUrl || previous.image_url, nowIso(), match.confidence,
+      match.confidence >= 0.8 ? "auto_matched" : "review", previous.id);
 
-    if (previous.price !== input.price) {
-      run(`INSERT INTO price_history (product_id, supplier_id, price, unit_price, sell_unit, unit_qty, at, source)
-           VALUES (?,?,?,?,?,?,?,?)`,
-        productId, supplierId, input.price, unitPrice, input.unit, input.unitQty, nowIso(), source);
+    if (previous.price !== input.price || previous.shipping !== input.shipping || previous.stock !== input.stock
+        || previous.stock_status !== input.stockStatus) {
+      run(`INSERT INTO price_history (product_id, supplier_id, price, unit_price, sell_unit, unit_qty, at, source,
+             supplier_product_id, shipping_cost, stock_status, vat_included, checked_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+        productId, supplierId, input.price, unitPrice, input.unit, input.unitQty, nowIso(), source,
+        previous.id, input.shipping ?? 0, input.stockStatus || null, input.vatIncluded ?? null, nowIso());
     }
-    return previous.price === input.price ? "unchanged" : "updated";
+    return { action: previous.price === input.price ? "unchanged" : "updated", id: previous.id };
   }
 
+  const supplierProductId = newId("SP");
   run(`INSERT INTO supplier_products
          (id, product_id, supplier_id, supplier_sku, raw_name, sell_unit, unit_qty,
-           price, shipping, moq, lead_days, stock, quoted_at, source, price_basis, product_url, active)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1)`,
-    newId("SP"), productId, supplierId, input.sku || null, input.name, input.unit, input.unitQty,
+           price, shipping, moq, lead_days, stock, quoted_at, source, price_basis, product_url,
+           external_product_id, normalized_title, manufacturer, model, raw_specification,
+           parsed_specifications, original_price, vat_included, stock_status, lead_time, image_url,
+           last_checked_at, match_confidence, match_status, active)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1)`,
+    supplierProductId, productId, supplierId, input.sku || null, input.name, input.unit, input.unitQty,
     input.price, input.shipping ?? 0, input.moq ?? 1, input.leadDays ?? null, input.stock ?? null,
-    input.quotedAt || today(), source, priceBasis, input.url || null);
+    input.quotedAt || today(), source, priceBasis, input.url || null, input.sku || null,
+    normalized(input.name), input.manufacturer || null, input.model || null, input.rawSpecification || null,
+    JSON.stringify(parseSpec(input.name, input.category).specs), input.originalPrice ?? null,
+    input.vatIncluded ?? null, input.stockStatus || null, input.lead || null, input.imageUrl || null,
+    nowIso(), match.confidence, match.confidence >= 0.8 ? "auto_matched" : "review");
 
-  run(`INSERT INTO price_history (product_id, supplier_id, price, unit_price, sell_unit, unit_qty, at, source)
-       VALUES (?,?,?,?,?,?,?,?)`,
-    productId, supplierId, input.price, unitPrice, input.unit, input.unitQty, nowIso(), source);
-  return "added";
+  run(`INSERT INTO price_history (product_id, supplier_id, price, unit_price, sell_unit, unit_qty, at, source,
+         supplier_product_id, shipping_cost, stock_status, vat_included, checked_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+    productId, supplierId, input.price, unitPrice, input.unit, input.unitQty, nowIso(), source,
+    supplierProductId, input.shipping ?? 0, input.stockStatus || null, input.vatIncluded ?? null, nowIso());
+  return { action: "added", id: supplierProductId };
 }
 
 /**
@@ -223,6 +305,8 @@ export function ingestSupplierCatalog({
       const input = {
         name,
         sku: raw.sku ? String(raw.sku).trim() : null,
+        productCode: raw.productCode ? String(raw.productCode).trim() : null,
+        model: raw.model ? String(raw.model).trim() : null,
         manufacturer: raw.manufacturer ? String(raw.manufacturer).trim() : null,
         category: raw.category,
         unit: unitInfo.unit,
@@ -232,19 +316,38 @@ export function ingestSupplierCatalog({
         moq: toNumber(raw.moq) ?? 1,
         leadDays: parseLeadDays(raw.lead),
         stock: toNumber(raw.stock),
+        stockStatus: raw.stockStatus || (toNumber(raw.stock) > 0 ? "in_stock" : toNumber(raw.stock) === 0 ? "out_of_stock" : null),
         quotedAt: raw.quotedAt || today(),
         priceBasis: raw.priceBasis,
         url: raw.url,
+        vatIncluded: raw.vatIncluded === null || raw.vatIncluded === undefined || raw.vatIncluded === ""
+          ? null : /^(1|true|y|yes|포함)$/i.test(String(raw.vatIncluded).trim()) ? 1 : 0,
+        originalPrice: toNumber(raw.originalPrice),
+        rawSpecification: raw.rawSpecification || null,
+        imageUrl: raw.imageUrl || raw.image || null,
+        lead: raw.lead || null,
       };
 
-      const attached = attachProduct(input);
+      const attached = attachProduct(input, source);
       summary[attached.status] += 1;
-      if (attached.confidence < 1) summary.review += 1;
 
-      const action = catalogOnly
-        ? "catalog"
-        : upsertSupplierProduct(attached.productId, supplierId, input, source);
+      const upserted = catalogOnly
+        ? { action: "catalog", id: null }
+        : upsertSupplierProduct(attached.productId, supplierId, input, source, attached);
+      const action = upserted.action;
       summary[action] += 1;
+      if (attached.confidence < 0.8) {
+        summary.review += 1;
+        if (!catalogOnly && upserted.id) {
+          run(`INSERT INTO product_match_reviews
+            (id, supplier_product_id, candidate_product_id, proposed_product_id, reason, score, evidence, status, created_at)
+            VALUES (?,?,?,?,?,?,?,'pending',?)`, newId("PMR"), upserted.id,
+          attached.suggestedCandidateId || attached.productId, attached.suggestedCandidateId || attached.productId,
+          attached.reason || "low_confidence", attached.confidence,
+          JSON.stringify({ manufacturer: input.manufacturer, model: input.model, productCode: input.productCode,
+            name: input.name, nameSimilarity: attached.nameSimilarity || 0 }), nowIso());
+        }
+      }
 
       if (preview.length < 200) {
         preview.push({
@@ -303,6 +406,8 @@ export function rowsFromCsv(text) {
   const rows = table.slice(1).map((line) => ({
     name: pick(line, "name"),
     sku: pick(line, "sku"),
+    productCode: pick(line, "productCode"),
+    model: pick(line, "model"),
     manufacturer: pick(line, "manufacturer"),
     category: pick(line, "category"),
     unit: pick(line, "unit"),
@@ -312,6 +417,10 @@ export function rowsFromCsv(text) {
     moq: pick(line, "moq"),
     lead: pick(line, "lead"),
     stock: pick(line, "stock"),
+    vatIncluded: pick(line, "vatIncluded"),
+    originalPrice: pick(line, "originalPrice"),
+    rawSpecification: pick(line, "rawSpecification"),
+    imageUrl: pick(line, "imageUrl"),
   }));
   return { rows, headers, map };
 }

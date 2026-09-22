@@ -385,12 +385,79 @@ function todayPanel(items) {
       item.hint ? h("small", { text: item.hint }) : null))));
 }
 
+/**
+ * 홈 — 오늘 할 일.
+ * 전 직원이 보는 첫 화면입니다. 경영 수치(경영 현황)는 사장 몫이라 따로 두고,
+ * 여기에는 "지금 손대야 할 것" 과 자재를 바로 찾는 검색창만 둡니다.
+ */
+const todayScreen = panelScreen({
+  crumb: "홈", title: "오늘 할 일",
+  async render() {
+    const [summary, inventory, orders, schedules, priceAlerts] = await Promise.all([
+      api("/api/summary"),
+      api("/api/inventory"),
+      api("/api/purchase-orders"),
+      api(`/api/schedules?from=${today()}&to=${addDays(today(), 13)}`),
+      api("/api/catalog/price-alerts?days=30&threshold=5").catch(() => []),
+    ]);
+
+    const shortage = inventory.filter((row) => row.shortage);
+    const incoming = orders.filter((order) => ["발주완료", "부분입고"].includes(order.status));
+    const waiting = summary.pendingRequests + summary.pendingApprovals;
+    // 90일 넘게 안 움직인 재고 — 자금이 잠긴 곳입니다.
+    const stale = inventory.filter((row) =>
+      row.on_hand > 0 && row.last_movement && row.last_movement < addDays(today(), -90));
+
+    return [
+      homeSearch(),
+      todayPanel([
+        { label: "부족 자재", count: shortage.length, tone: "bad",
+          hint: shortage.length ? `${shortage[0].product_name} 외` : "안전재고 이상",
+          go: () => openScreen("inv.status") },
+        { label: "입고 예정", count: summary.incomingOrders, tone: "accent",
+          hint: `미입고 ${fmt.int(sum(incoming, "remaining"))}`,
+          go: () => openScreen("pur.receive") },
+        { label: "승인 대기", count: waiting, tone: "warn",
+          hint: `요청 ${summary.pendingRequests} · 발주 ${summary.pendingApprovals}`,
+          go: () => openScreen(summary.pendingRequests ? "pur.request" : "pur.order") },
+        { label: "가격 오른 품목", count: priceAlerts.filter((row) => row.change > 0).length, tone: "warn",
+          hint: "최근 30일 · 5% 이상",
+          go: () => openScreen("pur.search") },
+        { label: "장기 재고", count: stale.length, tone: "mid",
+          hint: "90일 넘게 안 움직임",
+          go: () => openScreen("inv.status") },
+      ]),
+      h("div.cols2", {}, upcomingPanel(schedules), shortagePanel(shortage)),
+    ];
+  },
+});
+
+/** 부족한 자재를 바로 집어 줍니다 — 여기서 가격 비교로 넘어갑니다. */
+function shortagePanel(shortage) {
+  const rows = shortage.slice(0, 8);
+  return h("div.panel", {},
+    h("div.panel-head", {},
+      h("h3", { text: `부족 자재 ${shortage.length}품목` }),
+      h("button.btn.sm", { onclick: () => openScreen("inv.status") }, "재고현황")),
+    h("div.panel-body", {},
+      rows.length
+        ? h("table.qt-items", {},
+          h("thead", {}, h("tr", {}, ...["자재", "가용", "안전", "부족"]
+            .map((label, index) => h(`th${index ? ".num" : ""}`, { text: label })))),
+          h("tbody", {}, rows.map((row) => h("tr", {},
+            h("td.strong.ellip", { text: row.product_name }),
+            h("td.num", { text: `${fmt.int(row.available)}${row.unit || ""}` }),
+            h("td.num", { text: fmt.int(row.safety_stock) }),
+            h("td.num", {}, h("b.short", { text: fmt.int(Math.max(0, row.safety_stock - row.available)) }))))))
+        : h("p.muted", { text: "안전재고 아래로 내려간 자재가 없습니다." })));
+}
+
 const dashboard = panelScreen({
   crumb: "홈", title: "경영 현황",
   initialState: { span: "이번 달" },
   actions: () => [],
   async render(state, refresh) {
-    const [summary, inventory, orders, bidData, logs, reports, adjustments, salesRows, schedules, priceAlerts] = await Promise.all([
+    const [summary, inventory, orders, bidData, logs, reports, adjustments, salesRows, schedules] = await Promise.all([
       api("/api/summary"),
       api("/api/inventory"),
       api("/api/purchase-orders"),
@@ -403,8 +470,6 @@ const dashboard = panelScreen({
       api("/api/stock-adjustments"),
       ref.canFinance ? api("/api/sales-orders") : Promise.resolve([]),
       api(`/api/schedules?from=${today()}&to=${addDays(today(), 13)}`),
-      // 가격이 오른 품목은 다시 사기 전에 봐야 합니다.
-      api("/api/catalog/price-alerts?days=30&threshold=5").catch(() => []),
     ]);
 
     const incoming = orders.filter((order) => ["발주완료", "부분입고"].includes(order.status));
@@ -467,33 +532,7 @@ const dashboard = panelScreen({
     ];
     const toneOf = (value) => ({ 양호: "solid", 정상: "solid", 주의: "bad", 보통: "warn", 확인: "warn" }[value] || "mid");
 
-    // 90일 넘게 안 움직인 재고 — 자금이 잠긴 곳입니다.
-    const stale = inventory.filter((row) =>
-      row.on_hand > 0 && row.last_movement && row.last_movement < addDays(today(), -90));
-
     return [
-      /* ---------- 큰 검색창 — 메뉴를 헤매지 않고 바로 자재를 찾습니다 ---------- */
-      homeSearch(),
-
-      /* ---------- 오늘 확인할 항목 ---------- */
-      todayPanel([
-        { label: "부족 자재", count: shortage.length, tone: "bad",
-          hint: shortage.length ? `${shortage[0].product_name} 외` : "안전재고 이상",
-          go: () => openScreen("inv.status") },
-        { label: "입고 예정", count: summary.incomingOrders, tone: "accent",
-          hint: `미입고 ${fmt.int(sum(incoming, "remaining"))}`,
-          go: () => openScreen("pur.receive") },
-        { label: "승인 대기", count: waiting, tone: "warn",
-          hint: `요청 ${summary.pendingRequests} · 발주 ${summary.pendingApprovals}`,
-          go: () => openScreen(summary.pendingRequests ? "pur.request" : "pur.order") },
-        { label: "가격 오른 품목", count: priceAlerts.filter((row) => row.change > 0).length, tone: "warn",
-          hint: "최근 30일 · 5% 이상",
-          go: () => openScreen("pur.search") },
-        { label: "장기 재고", count: stale.length, tone: "mid",
-          hint: "90일 넘게 안 움직임",
-          go: () => openScreen("inv.status") },
-      ]),
-
       /* ---------- KPI 스트립 ---------- */
       h("div.metrics", {},
         metric({ label: "진행 중 공사", value: summary.activeProjects, unit: "건", name: "project", to: "base.project",
@@ -714,7 +753,7 @@ const invStatus = dataScreen({
     { key: "expected", label: "예정", align: "num", width: 56, sum: true },
     { key: "safety_stock", label: "안전", align: "num", width: 56 },
     ...(ref.canPrices ? [
-      { key: "last_buy_price", label: "최근 구매가", align: "num", width: 104,
+      { key: "last_buy_price", label: "최근 구매가", align: "num", width: 126,
         cell: (r) => (r.last_buy_price ? fmt.won(r.last_buy_price) : '<span class="muted">-</span>') },
     ] : []),
     { key: "last_buy_supplier", label: "최근 구매처", width: 110, cls: "ellip",
@@ -1779,7 +1818,10 @@ const specChips = (categories, category, specs) => {
 };
 
 function catalogSearch() {
-  const state = { q: "", sort: "match", category: "", inStock: false, open: new Set(), picked: new Map(), categories: null };
+  const state = {
+    q: "", sort: "match", category: "", manufacturer: "", specFilters: {},
+    inStock: false, open: new Set(), picked: new Map(), categories: null, tree: [],
+  };
   let result = { products: [], total: 0, parsed: {} };
 
   const searchInput = h("input", {
@@ -1789,35 +1831,93 @@ function catalogSearch() {
   const hint = h("div.search-hint");
   const body = h("div.screen-body");
   const countLine = h("div.result-line");
+  const dynamicFilters = h("div.dynamic-filters", { style: { display: "flex", gap: "8px", flexWrap: "wrap", padding: "10px 0" } });
 
   const run = async () => {
     state.q = searchInput.value;
-    result = await api(`/api/catalog/search?${new URLSearchParams({
-      q: state.q, sort: state.sort, category: state.category, inStock: state.inStock ? "1" : "",
-    })}`);
+    const params = new URLSearchParams({
+      q: state.q, sort: state.sort, category: state.category, manufacturer: state.manufacturer,
+      inStock: state.inStock ? "1" : "",
+    });
+    for (const [key, value] of Object.entries(state.specFilters)) if (value) params.set(`spec.${key}`, value);
+    result = await api(`/api/catalog/search?${params}`);
     state.categories = result.categories;
     draw();
   };
 
   searchInput.addEventListener("keydown", (event) => { if (event.key === "Enter") run(); });
 
+  const filterSelect = (label, value, options, onchange) => {
+    const control = h("select");
+    control.append(h("option", { value: "", text: label }), ...options.map((option) =>
+      h("option", { value: String(option.value), text: option.label })));
+    control.value = String(value ?? "");
+    control.onchange = () => onchange(control.value);
+    return control;
+  };
+
+  function drawDynamicFilters() {
+    const categoryOptions = [];
+    for (const group of state.tree || []) {
+      for (const category of group.categories || []) {
+        categoryOptions.push({ value: category.key, label: `${group.label} · ${category.label}` });
+      }
+    }
+    if (!categoryOptions.length) {
+      for (const [key, value] of Object.entries(state.categories || {})) categoryOptions.push({ value: key, label: value.label });
+    }
+    const controls = [filterSelect("전체 카테고리", state.category, categoryOptions, (value) => {
+      state.category = value; state.manufacturer = ""; state.specFilters = {}; run();
+    })];
+    if (result.facets?.manufacturer?.length) controls.push(filterSelect("전체 제조사", state.manufacturer,
+      result.facets.manufacturer.map((value) => ({ value, label: value })), (value) => { state.manufacturer = value; run(); }));
+    for (const field of result.facets?.specifications || []) {
+      controls.push(filterSelect(field.label, state.specFilters[field.key] || "",
+        field.values.map((value) => ({ value, label: `${value}${field.unit || ""}` })),
+        (value) => { state.specFilters[field.key] = value; run(); }));
+    }
+    if (state.manufacturer || Object.values(state.specFilters).some(Boolean)) {
+      controls.push(h("button.btn.sm", { onclick: () => { state.manufacturer = ""; state.specFilters = {}; run(); } }, "상세필터 초기화"));
+    }
+    dynamicFilters.replaceChildren(...controls);
+  }
+
   /** 업체별 비교 표 — 제품 행을 펼치면 나옵니다. */
   function offerTable(product, detail) {
+    const master = detail.product || product;
+    const definition = state.categories?.[master.category];
+    const officialLinks = [
+      ["제조사 공식페이지", master.manufacturer_url], ["Datasheet", master.datasheet_url], ["카탈로그", master.catalog_url],
+    ].filter(([, url]) => safeExternalUrl(url));
+    const facts = [
+      ["제조사", master.manufacturer], ["브랜드", master.brand], ["시리즈", master.series],
+      ["모델", master.model], ["제품코드", master.product_code], ["인증", master.certification],
+      ...(definition?.fields || []).map((field) => [field.label,
+        master.specs?.[field.key] === undefined ? null : `${master.specs[field.key]}${field.unit || ""}`]),
+    ].filter(([, value]) => value !== null && value !== undefined && value !== "");
+    const masterCard = h("div.product-master-card", {},
+      safeExternalUrl(master.image_url) ? h("img", { src: safeExternalUrl(master.image_url), alt: master.name }) : null,
+      h("div", {},
+        h("div.strong", { text: master.name }),
+        h("div.product-facts", {}, ...facts.map(([label, value]) => h("span", {}, h("b", { text: `${label} ` }), String(value)))),
+        officialLinks.length ? h("div.product-links", {}, ...officialLinks.map(([label, url]) =>
+          h("a.btn.sm", { href: safeExternalUrl(url), target: "_blank", rel: "noopener noreferrer" }, label))) : null));
     if (detail.pricesHidden) {
-      return h("div.offer-blocked", { text: "단가는 구매 담당 이상만 볼 수 있습니다." });
+      return h("div", {}, masterCard, h("div.offer-blocked", { text: "단가는 구매 담당 이상만 볼 수 있습니다." }));
     }
     if (!detail.offers.length) {
-      return h("div.offer-blocked", {},
+      return h("div", {}, masterCard, h("div.offer-blocked", {},
         h("span", { text: "등록된 공급처 단가가 없습니다. " }),
-        ref.can("master") ? h("button.btn.sm", { onclick: () => openScreen("base.import") }, "공급처 품목 등록") : null);
+        ref.can("master") ? h("button.btn.sm", { onclick: () => openScreen("base.import") }, "공급처 품목 등록") : null));
     }
     const best = detail.offers[0];
     const fastest = [...detail.offers].sort((a, b) => (a.lead_days ?? 999) - (b.lead_days ?? 999))[0];
 
     return h("div", {},
+      masterCard,
       h("table.offer", {},
         h("thead", {}, h("tr", {},
-          ["공급처", "가격구분", "판매단위", "단가", `환산단가(/${product.base_unit})`, "납기", "최소수량", "확인일", ""]
+          ["공급처", "가격구분", "판매단위", "단가", `환산단가(/${product.base_unit})`, "재고/납기", "예상 결제액", "마지막 확인", ""]
             .map((label, index) => h(`th${[3, 4, 6].includes(index) ? ".num" : ""}`, { text: label })))),
         h("tbody", {}, detail.offers.map((offer) => h("tr", {},
           h("td.strong", {}, offer.supplier_name,
@@ -1825,12 +1925,25 @@ function catalogSearch() {
             offer.id === fastest.id && fastest.lead_days !== null ? h("span.tag", {}, "최단납기") : null),
           h("td", {}, h("span.tag", { text: priceBasisLabel(offer.price_basis) })),
           h("td", { text: `${offer.sell_unit}${offer.unit_qty > 1 ? ` (${offer.unit_qty}${product.base_unit})` : ""}` }),
-          h("td.num", { text: fmt.won(offer.price) }),
+          h("td.num", {}, h("b", { text: fmt.won(offer.price) }),
+            h("small", { text: offer.vat_included === 1 ? "VAT 포함" : offer.vat_included === 0 ? "VAT 별도" : "VAT 확인 필요" })),
           h("td.num.strong", { text: `${fmt.int(Math.round(offer.unit_price))}원` }),
-          h("td", { text: offer.lead_days === null ? "-" : offer.lead_days === 0 ? "당일" : `${offer.lead_days}일` }),
-          h("td.num", { text: fmt.int(offer.moq) }),
-          h("td", { text: fmt.date(offer.quoted_at) }),
-          h("td", {}, safeExternalUrl(offer.product_url) ? h("a.btn.sm", { href: safeExternalUrl(offer.product_url), target: "_blank", rel: "noopener noreferrer" }, "상품보기") : null,
+          h("td", {}, h("div", { text: offer.stock_status || (offer.stock > 0 ? "재고 있음" : offer.stock === 0 ? "품절" : "재고 확인 필요") }),
+            h("small", { text: offer.lead_time || (offer.lead_days === null ? "납기 확인 필요" : offer.lead_days === 0 ? "당일" : `${offer.lead_days}일`) })),
+          h("td.num", {}, h("b", { text: fmt.won(offer.total_first_order) }),
+            h("small", { text: `MOQ ${fmt.int(offer.moq)} · 배송 ${fmt.won(offer.shipping || 0)}` })),
+          (() => {
+            const stale = offer.checked_at && Date.now() - Date.parse(offer.checked_at) > 72 * 60 * 60 * 1000;
+            return h("td", {}, h("div", { text: fmt.date(offer.checked_at) }), stale
+              ? h("small", { style: { color: "var(--danger, #b42318)" }, text: "⚠ 3일 이상 지난 가격" })
+              : h("small", { text: "판매처에서 최종 확인" }));
+          })(),
+          h("td", {}, safeExternalUrl(offer.product_url) ? h("button.btn.sm", { onclick: () => {
+            if (ref.can("purchasing")) api("/api/purchase-candidates", {
+              method: "POST", body: { productId: product.id, supplierProductId: offer.id, quantity: offer.moq || 1, productUrl: offer.product_url },
+            }).catch((error) => toast(error.message, "err"));
+            window.open(safeExternalUrl(offer.product_url), "_blank", "noopener,noreferrer");
+          } }, "구매사이트 이동") : null,
             ref.can("purchasing") ? h("button.btn.sm.primary", {
               onclick: () => requestDialog({
                 id: product.id, name: product.name, unit: offer.sell_unit,
@@ -1903,6 +2016,7 @@ function catalogSearch() {
   }
 
   function draw() {
+    drawDynamicFilters();
     hint.replaceChildren(
       ...(result.parsed?.recognized
         ? [specChips(state.categories, result.parsed.category, result.parsed.specs)]
@@ -1930,6 +2044,8 @@ function catalogSearch() {
         h("button.hit-main", { onclick: () => toggle(product, host) },
           h("div.hit-name", {},
             h("b", { text: product.name }),
+            product.model ? h("span.tag", { text: product.model }) : null,
+            product.product_code ? h("span.tag", { text: product.product_code }) : null,
             product.match < 100 ? h("span.tag.warn", { text: `${product.match}% 일치` }) : null,
             product.confidence < 1 ? h("span.tag.warn", {}, "규격 확인 필요") : null),
           h("div.hit-meta", {},
@@ -2002,6 +2118,7 @@ function catalogSearch() {
         searchInput,
         h("button.btn.primary", { onclick: run }, "검색")),
       hint,
+      dynamicFilters,
       h("div.search-filters", {},
         h("div.chipset", {}, SORTS.map(([key, label]) =>
           chip(label, state.sort === key, () => { state.sort = key; run(); }))),
@@ -2018,7 +2135,9 @@ function catalogSearch() {
   return {
     el,
     refresh: async () => {
-      if (!state.categories) state.categories = await api("/api/catalog/categories");
+      if (!state.categories) [state.categories, state.tree] = await Promise.all([
+        api("/api/catalog/categories"), api("/api/catalog/tree"),
+      ]);
       // 홈의 큰 검색창이나 재고 부족 화면에서 넘겨준 검색어가 있으면 그대로 씁니다.
       if (searchHandoff.query) { searchInput.value = searchHandoff.query; searchHandoff.query = ""; }
       await run();
@@ -3957,11 +4076,17 @@ function connectorCard(connector, refresh) {
 
   const rows = [
     ["사용여부", toggle, h("span.hint", { text: connector.status || "" })],
+    ["소스 등급/정책", h("input", {
+      value: `${connector.source_grade || "확인 필요"} · ${connector.policy_status || "review_required"}`, readonly: true,
+    })],
     ["API 주소", baseUrl],
     ["인증 환경변수",
       h("input", { value: connector.secret_env || "불필요", readonly: true }),
       h(`span.st${connector.secretConfigured ? ".solid" : ".bad"}`, { text: connector.secretConfigured ? "확인됨" : "미설정" })],
     ["최근 동기화", h("input", { value: connector.last_sync_at ? fmt.dt(connector.last_sync_at) : "없음", readonly: true })],
+    ["최근 성공/오류", h("input", {
+      value: connector.last_error || (connector.last_success_at ? `성공 ${fmt.dt(connector.last_success_at)}` : "기록 없음"), readonly: true,
+    })],
   ];
 
   return h("div.panel", {},
@@ -4080,7 +4205,8 @@ const CAL_LAYERS = [
   { key: "leave", label: "휴가" },
   { key: "etc", label: "기타" },
   { key: "project", label: "공사 기간" },
-  { key: "bid", label: "입찰 마감", adminOnly: true },
+  // 입찰 공고는 수십 건씩 들어와 달력을 뒤덮습니다. 필요할 때만 켜서 봅니다.
+  { key: "bid", label: "입찰 마감", adminOnly: true, off: true },
 ];
 
 const MAX_LANES = 4;          // 한 주에 겹쳐 보여 줄 줄 수. 넘치면 ＋N 으로 접습니다.
@@ -4149,7 +4275,7 @@ function teamCalendar() {
   const state = {
     month: today().slice(0, 7),
     selected: today(),
-    show: Object.fromEntries(CAL_LAYERS.map((layer) => [layer.key, true])),
+    show: Object.fromEntries(CAL_LAYERS.map((layer) => [layer.key, !layer.off])),
     data: null,
   };
   const body = h("div.screen-body");
@@ -4352,9 +4478,9 @@ function teamCalendar() {
           `div.sched-bar.bar-${bar.event.layer}${bar.opensLeft ? "" : ".cont-l"}${bar.closesRight ? "" : ".cont-r"}`,
           {
             style: {
-              left: `calc(${(bar.from / 7) * 100}% + 4px)`,
-              width: `calc(${((bar.to - bar.from + 1) / 7) * 100}% - 8px)`,
-              top: `${bar.lane * 24}px`,
+              left: `calc(${(bar.from / 7) * 100}% + 6px)`,
+              width: `calc(${((bar.to - bar.from + 1) / 7) * 100}% - 12px)`,
+              top: `${bar.lane * 26}px`,
             },
             title: `${bar.event.title}${bar.event.start === bar.event.end ? "" : ` (${bar.event.start} ~ ${bar.event.end})`}`,
             onclick: (clickEvent) => { clickEvent.stopPropagation(); openEvent(bar.event); },
@@ -4399,7 +4525,7 @@ function teamCalendar() {
 
   const el = h("div.screen.scroll", {},
     h("div.screen-head", {},
-      h("div", {}, h("div.crumb", { text: "홈 > 작업 일정" }), h("h1", { text: "팀 일정" })),
+      h("div", {}, h("div.crumb", { text: "홈 > 일정표" }), h("h1", { text: "일정표" })),
       h("div.head-actions", {},
         ref.can("schedule")
           ? h("button.btn.primary", {
@@ -4413,7 +4539,12 @@ function teamCalendar() {
 }
 
 export const MODULES = [
-  { id: "home", name: "홈", groups: [{ items: [["home.dashboard", "경영 현황"], ["home.calendar", "작업 일정"]] }] },
+  {
+    id: "home", name: "홈", groups: [{
+      // 경영 수치는 사장 몫입니다. 직원은 '오늘 할 일' 과 일정표를 봅니다.
+      items: [["home.today", "오늘 할 일"], ["home.dashboard", "경영 현황", "admin"], ["home.calendar", "일정표"]],
+    }],
+  },
   {
     id: "inventory", name: "재고", groups: [
       { name: "재고관리", items: [["inv.status", "재고현황"], ["inv.ledger", "재고수불부"], ["inv.adjust", "재고조정"], ["inv.allocation", "공사별 자재배정"], ["inv.transfer", "재고이동", "multisite"]] },
@@ -4421,8 +4552,14 @@ export const MODULES = [
     ],
   },
   {
+    id: "materials", name: "자재", groups: [
+      { name: "전기자재 카탈로그", items: [["pur.search", "자재 카탈로그·가격비교"], ["base.catalog", "제품 마스터"], ["pur.quote", "비교·견적함"]] },
+      { name: "데이터 관리", items: [["base.import", "판매상품 등록"], ["base.review", "규격·매칭 검수", "master"]] },
+    ],
+  },
+  {
     id: "purchase", name: "구매", groups: [
-      { name: "구매관리", items: [["pur.search", "자재 통합검색"], ["pur.quote", "견적 비교"], ["pur.request", "구매요청"], ["pur.order", "발주서"], ["pur.receive", "입고처리"], ["pur.receipts", "입고내역"]] },
+      { name: "구매관리", items: [["pur.quote", "견적 비교"], ["pur.request", "구매요청"], ["pur.order", "발주서"], ["pur.receive", "입고처리"], ["pur.receipts", "입고내역"]] },
       { name: "기준정보", items: [["base.supplier", "공급처등록"], ["base.partners", "거래처 일괄 등록"], ["base.import", "공급처 품목 등록"], ["base.catalog", "품목 마스터"], ["base.review", "규격 검수"]] },
     ],
   },
@@ -4460,8 +4597,9 @@ export const MODULES = [
 ];
 
 export const SCREENS = {
+  "home.today": { title: "오늘 할 일", build: todayScreen },
   "home.dashboard": { title: "경영 현황", build: dashboard },
-  "home.calendar": { title: "작업 일정", build: teamCalendar },
+  "home.calendar": { title: "일정표", build: teamCalendar },
   "inv.status": { title: "재고현황", build: invStatus },
   "inv.ledger": { title: "재고수불부", build: invLedger },
   "inv.transfer": { title: "재고이동", build: invTransfer },

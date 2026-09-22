@@ -58,7 +58,11 @@ export function offersFor(productId) {
   return all(OFFER_SQL, productId).map((row) => ({
     ...row,
     unit_price: Math.round(row.unit_price * 100) / 100,
-    total_first_order: row.price * (row.moq || 1) + (row.shipping || 0),
+    expected_subtotal: row.price * (row.moq || 1),
+    expected_vat: row.vat_included === 0 ? Math.round(row.price * (row.moq || 1) * 0.1) : 0,
+    total_first_order: row.price * (row.moq || 1) + (row.shipping || 0) + (row.other_cost || 0)
+      + (row.vat_included === 0 ? Math.round(row.price * (row.moq || 1) * 0.1) : 0),
+    checked_at: row.last_checked_at || row.quoted_at,
   }));
 }
 
@@ -84,7 +88,7 @@ export function priceTrend(productId, limit = 24) {
  * 통합검색.
  * sort: match(규격 일치순) | price(단가순) | lead(납기순) | stock(사내재고순)
  */
-export function searchProducts({ query = "", category = "", sort = "match", limit = 60, inStockOnly = false }) {
+export function searchProducts({ query = "", category = "", manufacturer = "", specFilters = {}, sort = "match", limit = 60, inStockOnly = false }) {
   const parsed = parseQuery(query);
   const clauses = [];
   const params = [];
@@ -121,13 +125,19 @@ export function searchProducts({ query = "", category = "", sort = "match", limi
     rows = all(`${PRODUCT_SQL} AND c.spec_key = ?`, parsed.key);
   }
 
-  const scored = rows.map((row) => ({
+  const unfiltered = rows.map((row) => ({
     ...row,
     specs: JSON.parse(row.specs || "{}"),
     match: wordCategory ? 100 : matchScore(parsed, row),
     best_unit_price: row.best_unit_price === null ? null : Math.round(row.best_unit_price * 100) / 100,
     last_buy_unit_price: row.last_buy_unit_price === null ? null : Math.round(row.last_buy_unit_price * 100) / 100,
   })).filter((row) => row.match > 0 || !query || Boolean(wordCategory));
+
+  const same = (actual, expected) => String(actual ?? "").toUpperCase() === String(expected ?? "").toUpperCase();
+  const scored = unfiltered.filter((row) => {
+    if (manufacturer && !same(row.manufacturer, manufacturer)) return false;
+    return Object.entries(specFilters).every(([key, value]) => !value || same(row.specs?.[key], value));
+  });
 
   const compare = {
     match: (a, b) => b.match - a.match || (a.best_unit_price ?? Infinity) - (b.best_unit_price ?? Infinity),
@@ -137,10 +147,23 @@ export function searchProducts({ query = "", category = "", sort = "match", limi
   }[sort] || null;
   if (compare) scored.sort(compare);
 
+  const facetValues = (values) => [...new Set(values.filter((value) => value !== null && value !== undefined && value !== ""))]
+    .sort((a, b) => typeof a === "number" && typeof b === "number" ? a - b : String(a).localeCompare(String(b), "ko"));
+  const activeCategory = category || parsed.category || wordCategory;
+  const definition = CATEGORIES[activeCategory] || null;
+  const facets = {
+    manufacturer: facetValues(unfiltered.map((row) => row.manufacturer)),
+    specifications: definition ? definition.fields.map((field) => ({
+      ...field,
+      values: facetValues(unfiltered.map((row) => row.specs?.[field.key])),
+    })).filter((field) => field.values.length) : [],
+  };
+
   return {
     query,
     parsed: { category: parsed.category, specs: parsed.specs, recognized: Boolean(parsed.category) },
     categories: CATEGORIES,
+    facets,
     total: scored.length,
     products: scored.slice(0, limit),
   };

@@ -176,13 +176,31 @@ export function resolveProduct(id, body, user) {
     }
 
     const manufacturer = str(body.manufacturer) ?? product.manufacturer;
+    const manualFields = [...new Set([
+      ...JSON.parse(product.manual_fields || "[]"),
+      "category", "specs", "manufacturer", "certification",
+      ...["brand", "subcategory", "series", "model", "product_code", "name", "image_url",
+        "manufacturer_url", "datasheet_url", "catalog_url", "certifications", "status"]
+        .filter((field) => body[field] !== undefined),
+    ])];
     run(`UPDATE catalog_products
          SET category = ?, specs = ?, spec_key = ?, spec_label = ?, name = ?,
-             manufacturer = ?, certification = ?, confidence = 1, updated_at = ?
+             manufacturer = ?, certification = ?, confidence = 1, updated_at = ?,
+             brand = ?, subcategory = ?, series = ?, model = ?, product_code = ?, normalized_name = ?,
+             image_url = ?, manufacturer_url = ?, datasheet_url = ?, catalog_url = ?, certifications = ?,
+             status = ?, manual_fields = ?
          WHERE id = ?`,
       category, JSON.stringify(specs), key, specLabel(category, specs),
-      canonicalName(category, specs, null) || product.name,
-      manufacturer, str(body.certification) ?? product.certification, nowIso(), id);
+      str(body.name) || canonicalName(category, specs, null) || product.name,
+      manufacturer, str(body.certification) ?? product.certification, nowIso(),
+      str(body.brand) ?? product.brand, str(body.subcategory) ?? product.subcategory,
+      str(body.series) ?? product.series, str(body.model) ?? product.model,
+      str(body.product_code) ?? product.product_code,
+      String(str(body.name) || canonicalName(category, specs, null) || product.name).toUpperCase().replace(/\s+/g, " ").trim(),
+      str(body.image_url) ?? product.image_url, str(body.manufacturer_url) ?? product.manufacturer_url,
+      str(body.datasheet_url) ?? product.datasheet_url, str(body.catalog_url) ?? product.catalog_url,
+      body.certifications === undefined ? product.certifications : JSON.stringify(body.certifications || []),
+      str(body.status) ?? "active", JSON.stringify(manualFields), id);
 
     auditLog(user, "기준정보", "규격 확정", `${id} / ${key}`);
     return get("SELECT * FROM catalog_products WHERE id = ?", id);

@@ -249,6 +249,9 @@ async function main() {
   console.log("\n자재 카탈로그 · 통합검색");
   const categories = await as("GET", "/api/catalog/categories");
   check("분류 정의 조회", categories.status === 200 && Boolean(categories.body.cable), Object.keys(categories.body).join(","));
+  const categoryTree = await as("GET", "/api/catalog/tree");
+  check("실무 분류 트리 조회", categoryTree.status === 200
+    && categoryTree.body.some((group) => group.categories.some((item) => item.key === "breaker")));
 
   // 같은 물건을 업체마다 다르게 적어 올립니다 — 하나로 묶이는지가 핵심입니다.
   const csvA = [
@@ -275,6 +278,11 @@ async function main() {
   });
   check("공급처 품목 적재", importA.status === 201 && importA.body.summary.created === 2, JSON.stringify(importA.body.summary));
   check("적재 이력 기록", (await as("GET", "/api/catalog/imports")).body.length === 1);
+  const matchReviews = await as("GET", "/api/catalog/matches/review");
+  check("낮은 신뢰도 매칭은 관리자 검수 큐로", matchReviews.status === 200 && matchReviews.body.length >= 1,
+    JSON.stringify(matchReviews.body));
+  const rejectedMatch = await as("PUT", `/api/catalog/matches/${matchReviews.body[0].id}`, { decision: "reject" });
+  check("관리자 동일제품 매칭 반려", rejectedMatch.status === 200 && rejectedMatch.body.ok === true);
 
   const supplierB = await as("POST", "/api/suppliers", { name: "스모크 공급처B", terms: "현금" });
   const importB = await as("POST", "/api/catalog/import", {
@@ -291,6 +299,10 @@ async function main() {
     JSON.stringify(found.body.parsed));
   check("업체 2곳이 한 제품에", cv.supplier_count === 2, String(cv.supplier_count));
   check("최저단가는 1m 기준 환산", cv.best_unit_price === 865, String(cv.best_unit_price));
+  const cableFacets = await as("GET", "/api/catalog/search?category=cable");
+  check("카테고리별 동적 규격 필터", cableFacets.status === 200
+    && cableFacets.body.facets.specifications.some((field) => field.key === "area" && field.values.includes(2.5)),
+  JSON.stringify(cableFacets.body.facets));
 
   const squashed = await as("GET", "/api/catalog/search?q=CV2.5SQ4C");
   check("붙여쓴 검색어도 같은 결과", squashed.body.products[0]?.id === cv.id,
@@ -308,6 +320,14 @@ async function main() {
   check("가격 이력 적재", (await as("GET", `/api/catalog/products/${cv.id}/trend`)).body.length === 2);
 
   const selectedOffer = detail.body.offers[0];
+  const candidate = await asPurchasing("POST", "/api/purchase-candidates", {
+    productId: cv.id, supplierProductId: selectedOffer.id, quantity: 2, productUrl: selectedOffer.product_url,
+  });
+  check("구매사이트 이동 전 구매후보 기록", candidate.status === 201
+    && candidate.body.product_id === cv.id && candidate.body.supplier_product_id === selectedOffer.id,
+  JSON.stringify(candidate.body));
+  check("구매후보 목록 조회", (await asPurchasing("GET", "/api/purchase-candidates")).body
+    .some((row) => row.id === candidate.body.id));
   const comparedRequest = await as("POST", "/api/purchase-requests", {
     productId: cv.id, projectId: project.body.id, quantity: 2,
     purpose: "판매처 비교 선택 검증", requestedDate: "2026-10-10",
@@ -818,6 +838,9 @@ async function main() {
     && SOURCE_KEYS.every((key) => typeof sources.body[key]?.live === "boolean"),
   JSON.stringify(sources.body));
   check("자재몰 수집은 인증키가 필요 없음", sources.body.mall.keyConfigured === true);
+  check("정책 승인 전 자재몰 수집 중지", sources.body.mall.live === false
+    && sources.body.mall.policyStatus === "permission_required");
+  check("종료된 네이버 API 강제 비활성", sources.body.naver.live === false && sources.body.naver.retired === true);
   // 키가 없을 때 500 으로 터지면 화면이 이유를 안내하지 못합니다. 200 + ok:false 여야 합니다.
   for (const [label, path] of [["네이버", "naver"], ["쿠팡", "coupang"], ["알리", "ali"]]) {
     const result = await as("POST", `/api/catalog/${path}/sync`, { query: "전선" });
@@ -978,6 +1001,24 @@ async function main() {
   check("일정 삭제", (await asWarehouse("DELETE", `/api/schedules/${leave.body.id}`)).status === 200);
   check("삭제 후 조회되지 않음",
     !(await as("GET", "/api/schedules?from=2026-10-01&to=2026-10-31")).body.some((row) => row.id === leave.body.id));
+
+  console.log("\n글자 인코딩");
+  // 한글이 조각 경계에 걸려도 깨지지 않아야 합니다(본문을 바이트로 모아 한 번에 풉니다).
+  const longTitle = "3층 배관 작업 ".repeat(400).trim();
+  const longSched = await as("POST", "/api/schedules", {
+    kind: "work", title: longTitle, startDate: "2026-10-02", endDate: "2026-10-02", assignees: "설경민",
+  });
+  check("긴 한글 본문도 안 깨짐", longSched.status === 201 && longSched.body.title === longTitle,
+    JSON.stringify(longSched.body?.title || "").slice(0, 60));
+  await as("DELETE", `/api/schedules/${longSched.body.id}`);
+
+  // 깨진 글자가 섞여 오면 저장하지 않고 막습니다 — 저장되면 되살릴 수 없습니다.
+  const broken = await as("POST", "/api/schedules", {
+    kind: "work", title: `3${String.fromCharCode(0xFFFD)}${String.fromCharCode(0xFFFD)} 작업`,
+    startDate: "2026-10-03", endDate: "2026-10-03",
+  });
+  check("깨진 글자는 거부", broken.status === 400, JSON.stringify(broken.body));
+  check("거부 사유를 알려 줌", String(broken.body?.message || "").includes("UTF-8"), broken.body?.message);
 
   console.log("\n보안");
   check("정적 경로 탈출 차단",

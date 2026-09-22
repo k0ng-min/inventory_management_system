@@ -327,6 +327,7 @@ button { cursor: pointer; }
   font-size: 14px; font-weight: 600; color: var(--fg-2);
   height: 46px; border-bottom: 1px solid var(--line);
 }
+.grid th { overflow: hidden; text-overflow: ellipsis; }
 .grid th.sortable { cursor: pointer; user-select: none; }
 .grid th.sortable:hover { color: var(--accent-deep); background: var(--surface-3); }
 .grid th .caret { color: #cbd5e1; margin-left: 5px; font-size: 9px; }
@@ -341,9 +342,12 @@ button { cursor: pointer; }
 .grid td.num { color: var(--fg); }
 .grid td.code { font-size: 13px; color: var(--fg-3); font-variant-numeric: tabular-nums; }
 .grid td.strong { color: var(--fg); font-weight: 600; }
-.grid td.wrap { white-space: normal; min-width: 230px; line-height: 1.5; padding-top: 11px; padding-bottom: 11px; }
+.grid td.wrap {
+  white-space: normal; line-height: 1.5; padding-top: 11px; padding-bottom: 11px;
+  word-break: keep-all; overflow-wrap: anywhere;
+}
 .grid td.ellip { max-width: 0; overflow: hidden; text-overflow: ellipsis; }
-.grid td b { color: var(--fg); font-weight: 700; }
+.grid td b { color: var(--fg); font-weight: 700; max-width: 100%; overflow: hidden; text-overflow: ellipsis; display: inline-block; vertical-align: bottom; }
 .grid tfoot td {
   position: sticky; bottom: 0; background: var(--surface-3); color: var(--fg); font-weight: 700;
   border-top: 1px solid var(--line); border-bottom: 0; height: 46px;
@@ -463,9 +467,11 @@ button.metric:hover { border-color: var(--accent-line); box-shadow: var(--shadow
 .stat > .delta.down { color: var(--danger); }
 
 .seg { display: inline-flex; background: var(--surface-3); border-radius: var(--r-md); padding: 3px; gap: 2px; }
+.seg { max-width: 100%; flex-wrap: wrap; }
 .seg button {
   height: 30px; padding: 0 14px; border: 0; background: transparent; color: var(--fg-2);
   border-radius: var(--r-sm); font-size: 13px; font-weight: 500; transition: .12s;
+  white-space: nowrap; flex: none;
 }
 .seg button:hover { color: var(--fg); }
 .seg button.on { background: var(--surface); color: var(--accent-deep); font-weight: 600; box-shadow: var(--shadow-sm); }
@@ -592,7 +598,8 @@ dialog.modal::backdrop { background: rgba(15, 23, 42, .4); }
 .form > dd { margin: 0; display: flex; align-items: center; gap: 10px; min-width: 0; }
 .form > dd.full { grid-column: 1 / -1; }
 .form input, .form select, .form textarea {
-  width: 100%; height: 42px; padding: 0 13px; font-size: 14px;
+  width: 100%; min-width: 0; max-width: 100%; box-sizing: border-box;
+  height: 42px; padding: 0 13px; font-size: 14px;
   border: 1px solid var(--surface-4); border-radius: var(--r-md); background: var(--surface); color: var(--fg);
   transition: .14s;
 }
@@ -689,16 +696,23 @@ dialog.modal::backdrop { background: rgba(15, 23, 42, .4); }
 .dashboard-empty p { margin: 0; max-width: 520px; color: var(--fg-2); }
 .dashboard-empty-actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; margin-top: 10px; }
 
-/* 모든 화면은 컨테이너 안에서 줄어들고, 표는 가로 스크롤 없이 내용을 접는다. */
+/* 화면은 컨테이너 안에서 줄어들고, 페이지 자체는 가로로 스크롤되지 않는다.
+   열이 많은 표는 '표 안에서' 가로로 스크롤한다 — 줄바꿈으로 접으면 한 글자씩
+   세로로 쪼개지고 행 높이가 제각각이 되어 읽기가 더 어렵다.
+   업무 버튼 열은 오른쪽에 고정되어 스크롤 위치와 무관하게 누를 수 있다. */
 html, body, #app, .app, .shell, .work, .tabhost, .screen { min-width: 0; max-width: 100%; }
 html, body { overflow-x: hidden; }
-.gridwrap { overflow-x: hidden; }
-.grid { table-layout: fixed; }
-.grid th, .grid td { min-width: 0; white-space: normal; overflow-wrap: anywhere; word-break: keep-all; }
-.grid td.ellip { max-width: none; overflow: hidden; text-overflow: ellipsis; }
+.gridwrap { overflow-x: auto; }
+/* 열 폭은 화면 정의가 준 값을 '최소' 로 쓰고, 남는 글은 내용에 맞춰 늘린다.
+   fixed 로 두면 폭을 안 준 열에 남은 4px 만 배분되어 글자가 세로로 쪼개진다. */
+.grid { table-layout: auto; }
+/* 칸을 넘치는 글자는 흘리지 않고 말줄임으로 끊는다. 제목 속성으로 전체를 볼 수 있다. */
+.grid td { overflow: hidden; text-overflow: ellipsis; }
+.grid td.wrap { overflow: visible; text-overflow: clip; }
 .paper { width: 100%; min-width: 0; }
 .paper table { table-layout: fixed; }
 .paper th, .paper td { overflow-wrap: anywhere; word-break: keep-all; }
+.paper td small { display: block; white-space: normal; overflow-wrap: anywhere; }
 
 
 /* ==========================================================================
@@ -710,7 +724,7 @@ html, body { overflow-x: hidden; }
 .sched-cal { border: 1px solid var(--line); border-radius: 12px; overflow: hidden; background: var(--surface); }
 .sched-weeks { display: flex; flex-direction: column; }
 
-.sched-week { position: relative; border-bottom: 1px solid var(--line); }
+.sched-week { position: relative; border-bottom: 1px solid var(--line); min-height: 112px; }
 .sched-week:last-child { border-bottom: 0; }
 
 .sched-week-days { position: absolute; inset: 0; display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); }
@@ -730,15 +744,17 @@ html, body { overflow-x: hidden; }
 .sched-day:nth-child(7) .n { color: var(--accent-deep); }
 .sched-day.out { background: var(--surface-2); }
 .sched-day.out .n { color: #cbd5e1; }
-.sched-day.today .n { background: var(--accent); color: #fff; }
+.sched-day.today .n { background: var(--accent); color: #fff; box-shadow: 0 1px 3px rgba(37, 99, 235, .35); }
+.sched-day.today { background: var(--accent-wash); }
 .sched-day.on { box-shadow: inset 0 0 0 2px var(--accent); background: var(--accent-wash); }
 .sched-day .more { font-size: 11px; color: var(--fg-3); line-height: 20px; }
 
 /* 막대층은 날짜 숫자 아래에서 시작하고, 클릭은 막대에만 걸립니다. */
-.sched-week-bars { position: absolute; left: 0; right: 0; top: 30px; bottom: 0; pointer-events: none; }
+.sched-week-bars { position: absolute; left: 0; right: 0; top: 32px; bottom: 0; pointer-events: none; }
 .sched-bar {
-  position: absolute; height: 21px; border-radius: 5px; pointer-events: auto;
-  border: 0; cursor: pointer; padding: 0 8px; font: inherit; font-size: 12px; line-height: 21px;
+  position: absolute; height: 23px; border-radius: 6px; pointer-events: auto;
+  border: 0; cursor: pointer; padding: 0 9px; font: inherit; font-size: 12.5px; line-height: 23px;
+  font-weight: 500; letter-spacing: -0.01em;
   border-left: 3px solid transparent; text-align: left;
   display: block; overflow: hidden;
 }
@@ -763,10 +779,23 @@ html, body { overflow-x: hidden; }
   font: inherit; font-size: 13px; font-weight: 500;
   border: 1px solid var(--line); background: var(--surface); color: var(--fg-3);
 }
-.sched-chip i { width: 9px; height: 9px; border-radius: 3px; background: currentColor; opacity: 0.35; }
-.sched-chip.on i { opacity: 1; }
-.sched-chip:not(.on) { background: var(--surface) !important; color: var(--fg-3) !important; }
-.sched-chip.on { border-color: transparent; }
+.sched-chip i { width: 9px; height: 9px; border-radius: 3px; background: currentColor; flex: none; }
+/* 켜진 칩은 종류 색을 그대로 입고(bar-* 규칙), 꺼진 칩만 색을 뺍니다. */
+.sched-chip.on { border-color: transparent; font-weight: 600; }
+.sched-chip:not(.on) {
+  background: var(--surface) !important; color: var(--fg-3) !important; border-color: var(--line) !important;
+}
+.sched-chip:not(.on) i { opacity: 0.3; }
+.sched-chip:hover { border-color: var(--surface-4); }
+
+/* 켜진 칩의 종류 색.
+   .bar-* 규칙은 .sched-chip 보다 위에 있어 그대로 두면 덮입니다.
+   칩에서만 쓰는 선택자로 다시 적어 색을 되살립니다. */
+.sched-chip.on.bar-work { background: var(--accent-wash); color: var(--accent-deep); }
+.sched-chip.on.bar-leave { background: var(--warn-wash); color: var(--warn); }
+.sched-chip.on.bar-etc { background: var(--surface-3); color: var(--fg-2); }
+.sched-chip.on.bar-project { background: var(--ok-wash); color: var(--ok); }
+.sched-chip.on.bar-bid { background: var(--danger-wash); color: var(--danger); }
 
 /* 선택한 날짜의 목록 */
 .sched-list { display: flex; flex-direction: column; gap: 8px; }
@@ -870,7 +899,9 @@ html, body { overflow-x: hidden; }
    ========================================================================== */
 
 @media (max-width: 1120px) {
-  .shell { grid-template-columns: 0 1fr; }
+  /* 좌측 메뉴가 position:fixed 로 흐름에서 빠지므로 본문이 유일한 격자 항목이 된다.
+     0 1fr 로 두면 본문이 폭 0 인 첫 칸에 들어가 화면 전체가 찌그러진다. */
+  .shell { grid-template-columns: 1fr; }
   .lnb {
     position: fixed; top: 60px; bottom: 0; left: 0; width: 264px; z-index: 40;
     transform: translateX(-300px); transition: transform .18s cubic-bezier(.3,.8,.3,1);
@@ -1455,6 +1486,21 @@ table.ol.edit td:first-child { min-width: 220px; }
 .imp-bar .muted { font-size: 13px; }
 .recv-qty.defect { width: 84px; }
 .recv-qty.defect:not([value="0"]) { border-color: var(--warn-line); }
+
+/* 자재 카테고리에 따라 서버가 내려주는 규격 필터 */
+.dynamic-filters select {
+  min-width: 150px; height: 38px; padding: 0 32px 0 11px;
+  border: 1px solid var(--surface-4); border-radius: var(--r-md); background: var(--surface);
+}
+.dynamic-filters select:focus { outline: 2px solid var(--accent-soft); outline-offset: -1px; }
+.offer td small { display: block; margin-top: 3px; color: var(--fg-3); white-space: nowrap; }
+.product-master-card {
+  display: flex; gap: 14px; align-items: flex-start; padding: 14px; margin-bottom: 12px;
+  border: 1px solid var(--line); border-radius: var(--r-md); background: var(--surface-2);
+}
+.product-master-card > img { width: 76px; height: 76px; object-fit: contain; border-radius: 8px; background: #fff; }
+.product-facts { display: flex; flex-wrap: wrap; gap: 5px 14px; margin-top: 7px; font-size: 12px; color: var(--fg-2); }
+.product-links { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 10px; }
 
 @media (max-width: 1080px) {
   .today-items { grid-template-columns: repeat(2, 1fr); }

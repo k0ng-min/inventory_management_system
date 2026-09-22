@@ -392,9 +392,14 @@ export function grid({ rows, columns, empty, onRowClick, rowClass, footer, selec
     const body = h("tbody", {}, data.map((row) => {
       const tr = h(`tr${rowClass?.(row) ? `.${rowClass(row)}` : ""}${selectedId && row[idKey] === selectedId ? ".selected" : ""}`,
         { dataset: { id: String(row[idKey] ?? "") } },
-        columns.map((column) => h(`td${column.align === "num" ? ".num" : ""}${stickyEnd(column) ? ".sticky-end" : ""}${column.cls ? `.${column.cls}` : ""}`, {
-          html: column.cell ? column.cell(row) : esc(row[column.key] ?? ""),
-        })));
+        columns.map((column) => {
+          const td = h(`td${column.align === "num" ? ".num" : ""}${stickyEnd(column) ? ".sticky-end" : ""}${column.cls ? `.${column.cls}` : ""}`, {
+            html: column.cell ? column.cell(row) : esc(row[column.key] ?? ""),
+          });
+          // 칸이 좁아 말줄임된 글자는 마우스를 올리면 전체가 보이게 합니다.
+          if (!column.noExport && td.textContent.trim()) td.title = td.textContent.trim();
+          return td;
+        }));
       if (onRowClick) {
         tr.style.cursor = "pointer";
         tr.addEventListener("click", (event) => {

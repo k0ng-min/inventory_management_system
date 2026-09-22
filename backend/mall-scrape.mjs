@@ -336,13 +336,18 @@ export function supplierForMall(mall) {
 
 export function mallStatus() {
   const connector = get("SELECT * FROM connectors WHERE id = 'mall-scrape'");
+  const approved = connector?.policy_status === "approved";
   return {
     enabled: Boolean(connector?.enabled),
-    live: Boolean(connector?.enabled),
+    live: Boolean(connector?.enabled && approved),
     keyConfigured: true,                 // 인증키가 필요 없는 소스입니다
+    policyStatus: connector?.policy_status || "review_required",
+    sourceGrade: connector?.source_grade || "C",
     lastSyncAt: connector?.last_sync_at || null,
     malls: MALLS.map(({ id, name, origin, note }) => ({ id, name, origin, note })),
-    reason: connector?.enabled ? null : "설정 > 연동설정에서 '온라인 자재몰 수집'을 켜 주세요.",
+    reason: approved
+      ? (connector?.enabled ? null : "설정 > 연동설정에서 온라인 자재몰 수집을 켜 주세요.")
+      : "robots.txt만으로 자동수집 허용을 확정할 수 없습니다. 판매처의 서면 허용 또는 제휴 승인이 필요합니다.",
   };
 }
 
