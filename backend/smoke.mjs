@@ -515,6 +515,120 @@ async function main() {
     (await as("GET", "/api/purchase-orders")).body.find((row) => row.id === mlId)?.lines.length === 3);
   check("조회전용에겐 줄 금액도 숨김 — 이제는 공개", (await asViewer("GET", "/api/purchase-orders")).status === 200);
 
+  console.log("\n재고현황 보강 · 거래처 적재 · 규격 검수");
+
+  // 재고현황에 "얼마에 어디서 샀고 언제 들어왔나" 가 붙습니다.
+  // 재고이동으로 같은 품목이 두 창고에 있으므로 입고한 창고의 행을 봅니다.
+  const invRow = (await as("GET", "/api/inventory")).body
+    .find((row) => row.product_id === "MAT-SMOKE-01" && row.warehouse_id === "WH-SMOKE");
+  check("재고에 최근 입고일", Boolean(invRow.last_receipt_at), String(invRow?.last_receipt_at));
+  check("재고에 최근 사용일 칸 존재", "last_issue_at" in invRow, JSON.stringify(Object.keys(invRow).slice(-4)));
+  check("재고에 최근 구매가 칸 존재", "last_buy_price" in invRow && "last_buy_supplier" in invRow,
+    JSON.stringify([invRow.last_buy_price, invRow.last_buy_supplier]));
+
+  const sum2 = (await as("GET", "/api/summary")).body;
+  check("요약에 창고 수", typeof sum2.warehouseCount === "number", String(sum2.warehouseCount));
+  check("요약에 장기재고 수", typeof sum2.staleItems === "number", String(sum2.staleItems));
+
+  // 불량·오배송 기록
+  const defectOrder = await as("POST", "/api/purchase-orders", {
+    supplierId: supplier.body.id, status: "발주완료", warehouseId: "WH-SMOKE",
+    lines: [{ productId: "MAT-ML-03", quantity: 20, unitPrice: 320 }],
+  });
+  const defectLine = defectOrder.body.lines[0].id;
+  const withDefect = await asWarehouse("POST", `/api/purchase-orders/${defectOrder.body.id}/receive`, {
+    warehouseId: "WH-SMOKE", receivedAt: "2026-09-22",
+    lines: [{ lineId: defectLine, quantity: 20, defectQty: 3, defectKind: "파손" }],
+  });
+  check("불량 수량과 함께 입고", withDefect.status === 200, JSON.stringify(withDefect.body?.lines));
+  const defectRow = (await as("GET", "/api/goods-receipts")).body.find((row) => row.line_id === defectLine);
+  check("불량 수량 기록", defectRow.defect_qty === 3, String(defectRow?.defect_qty));
+  check("불량 사유 기록", defectRow.defect_kind === "파손", String(defectRow?.defect_kind));
+  check("불량이 입고 수량보다 많으면 거부", (await asWarehouse("POST",
+    `/api/purchase-orders/${defectOrder.body.id}/receive`, {
+      warehouseId: "WH-SMOKE", lines: [{ lineId: defectLine, quantity: 1, defectQty: 5 }],
+    })).status === 400);
+
+  // 거래처 일괄 등록 — 엑셀에서 CSV 로 저장한 명부를 그대로
+  const partnerCsv = [
+    "업체명,사업자번호,담당자,전화,결제조건",
+    "새한전기,111-22-33333,김새한,02-1111-2222,월말결제",
+    "동서전선,222-33-44444,이동서,031-222-3333,현금",
+    "스모크 공급처,,최담당,02-999-8888,",
+  ].join("\n");
+
+  check("머리글이 없으면 거부", (await as("POST", "/api/partners/suppliers/import", {
+    csv: "가나다\n1,2,3",
+  })).status === 400);
+
+  const partnerPreview = await as("POST", "/api/partners/suppliers/import/preview", { csv: partnerCsv });
+  check("적재 미리보기", partnerPreview.status === 200 && partnerPreview.body.summary.total === 3,
+    JSON.stringify(partnerPreview.body.summary));
+  check("미리보기는 쓰지 않음",
+    !(await as("GET", "/api/suppliers")).body.some((row) => row.name === "새한전기"));
+
+  const partnerImport = await as("POST", "/api/partners/suppliers/import", {
+    csv: partnerCsv, filename: "거래처.csv",
+  });
+  check("거래처 일괄 등록", partnerImport.status === 201 && partnerImport.body.summary.created === 2,
+    JSON.stringify(partnerImport.body.summary));
+  const saehan = (await as("GET", "/api/suppliers")).body.find((row) => row.name === "새한전기");
+  check("열 매핑 — 사업자번호·담당자·전화", saehan.biz_no === "111-22-33333"
+    && saehan.contact === "김새한" && saehan.phone === "02-1111-2222", JSON.stringify(saehan));
+  check("이미 있는 업체는 빈 칸만 채움", partnerImport.body.summary.updated === 1,
+    JSON.stringify(partnerImport.body.summary));
+  const existing = (await as("GET", "/api/suppliers")).body.find((row) => row.name === "스모크 공급처");
+  // CSV 의 결제조건 칸이 비어 있었으므로 원래 값이 그대로 남아야 하고,
+  // 비어 있던 담당자만 채워져야 합니다.
+  check("있던 값은 덮어쓰지 않음", existing.terms === "월말", JSON.stringify(existing.terms));
+  check("비어 있던 칸만 채움", existing.contact === "최담당", JSON.stringify(existing.contact));
+
+  const customerCsv = ["거래처명,담당자,전화", "한빛건설,박한빛,02-777-6666"].join("\n");
+  const customerImport = await as("POST", "/api/partners/customers/import", { csv: customerCsv });
+  check("고객도 같은 경로로 적재", customerImport.status === 201
+    && (await as("GET", "/api/customers")).body.some((row) => row.name === "한빛건설"),
+    JSON.stringify(customerImport.body.summary));
+  check("조회전용은 거래처 적재 차단",
+    (await asViewer("POST", "/api/partners/suppliers/import", { csv: customerCsv })).status === 403);
+
+  // 규격 검수 — 파서가 반만 읽은 제품을 사람이 확정합니다.
+  await as("POST", "/api/catalog/import", {
+    supplierId: supplier.body.id, filename: "모호.csv",
+    catalogOnly: true,
+    csv: "품명\n알 수 없는 전기부속 ZX-9",
+  });
+  const queue = await as("GET", "/api/catalog/review");
+  check("검수 큐 조회", queue.status === 200 && queue.body.length >= 1, String(queue.body?.length));
+  const unsure = queue.body.find((row) => row.confidence < 1);
+  check("검수 대상은 신뢰도가 낮은 것", unsure.confidence < 1, String(unsure?.confidence));
+  check("검수 화면에 분류별 규격 칸이 함께 옴", Array.isArray(unsure.fields) && unsure.fields.length > 0,
+    JSON.stringify(unsure.fields?.map((f) => f.key)));
+
+  check("핵심 규격을 비우면 거부", (await as("PUT", `/api/catalog/products/${unsure.id}/resolve`, {
+    category: "cable", specs: { type: "CV" },
+  })).status === 400);
+  check("숫자 칸에 글자는 거부", (await as("PUT", `/api/catalog/products/${unsure.id}/resolve`, {
+    category: "cable", specs: { type: "CV", area: "굵은거", cores: 4 },
+  })).status === 400);
+
+  const resolved = await as("PUT", `/api/catalog/products/${unsure.id}/resolve`, {
+    category: "conduit", specs: { type: "CD", size: 16 }, manufacturer: "동양전기",
+  });
+  check("규격 확정", resolved.status === 200 && resolved.body.confidence === 1, JSON.stringify(resolved.body));
+  check("확정하면 매칭 키가 다시 만들어짐", resolved.body.spec_key === "conduit|CD|16", resolved.body.spec_key);
+  check("확정하면 표준 이름이 붙음", resolved.body.spec_label === "CD 16mm", resolved.body.spec_label);
+  check("확정된 제품은 큐에서 빠짐",
+    !(await as("GET", "/api/catalog/review")).body.some((row) => row.id === unsure.id));
+
+  check("같은 규격이 이미 있으면 알려 줌", (await as("PUT", `/api/catalog/products/${cv.id}/resolve`, {
+    category: "conduit", specs: { type: "CD", size: 16 },
+  })).status === 400);
+
+  check("쓰지 않는 제품은 숨김", (await as("DELETE", `/api/catalog/products/${resolved.body.id}`)).status === 200);
+  check("숨긴 제품은 검색에 안 나옴",
+    !(await as("GET", `/api/catalog/search?q=${encodeURIComponent("CD 16")}`)).body.products
+      .some((row) => row.id === resolved.body.id));
+
   console.log("\n견적함 · 업체별 견적 비교");
 
   // 업체 두 곳이 세 품목을 서로 다르게 팝니다. A 는 전부 팔고, B 는 둘만 싸게 팝니다.

@@ -176,6 +176,8 @@ CREATE TABLE IF NOT EXISTS goods_receipts (
   quantity INTEGER NOT NULL,
   received_at TEXT NOT NULL,
   receiver TEXT,
+  defect_qty INTEGER NOT NULL DEFAULT 0,
+  defect_kind TEXT,
   note TEXT
 );
 
@@ -456,6 +458,9 @@ ensureColumn("purchase_requests", "quoted_unit_price", "REAL");
 ensureColumn("catalog_products", "certification", "TEXT");
 ensureColumn("goods_receipts", "line_id", "TEXT");
 ensureColumn("goods_receipts", "batch_id", "TEXT");
+// 불량·오배송은 "받긴 받았는데 못 쓰는" 수량입니다. 재고에는 넣지 않고 기록만 남깁니다.
+ensureColumn("goods_receipts", "defect_qty", "INTEGER NOT NULL DEFAULT 0");
+ensureColumn("goods_receipts", "defect_kind", "TEXT");
 // 다품목 발주로 올리기 전에, 기존 DB 에도 헤더 열이 있어야 합니다.
 ensureColumn("purchase_orders", "note", "TEXT");
 ensureColumn("purchase_orders", "line_count", "INTEGER NOT NULL DEFAULT 0");
@@ -646,10 +651,13 @@ export function moveStock({ type, productId, warehouseId, qty, refType, refId, p
 /* seed — runs once, from the original data.json prototype fixtures    */
 /* ------------------------------------------------------------------ */
 
+/**
+ * 이 회사는 사업장이 하나입니다. 자재를 한 곳에 두고 현장으로 들고 나갑니다.
+ * 그래서 기본은 창고 한 개 — 화면이 창고를 묻지 않습니다.
+ * 창고를 더 만들면 그때부터 선택 칸과 재고이동 메뉴가 다시 나타납니다.
+ */
 const WAREHOUSE_SEED = [
-  { id: "WH-HQ", name: "본사 자재창고", location: "서울 금천구", manager: "김현우" },
-  { id: "WH-SEJONG", name: "세종 현장창고", location: "세종 집현동", manager: "박지민" },
-  { id: "WH-DONGTAN", name: "동탄 현장창고", location: "화성 동탄", manager: "이준호" },
+  { id: "WH-HQ", name: "본사 사업장", location: "", manager: "" },
 ];
 
 function seedBidNotices() {

@@ -29,12 +29,13 @@ const openScreen = (screenId) => nav.open(screenId);
 export const ref = {
   products: [], suppliers: [], customers: [], warehouses: [], projects: [], me: null,
 
+  categories: null,
   async reload() {
-    const [products, suppliers, customers, warehouses, projects] = await Promise.all([
+    const [products, suppliers, customers, warehouses, projects, categories] = await Promise.all([
       api("/api/products"), api("/api/suppliers"), api("/api/customers"),
-      api("/api/warehouses"), api("/api/projects"),
+      api("/api/warehouses"), api("/api/projects"), api("/api/catalog/categories"),
     ]);
-    Object.assign(this, { products, suppliers, customers, warehouses, projects });
+    Object.assign(this, { products, suppliers, customers, warehouses, projects, categories });
   },
   opt(list, label = (row) => row.name) {
     return list.map((row) => ({ value: row.id, label: label(row) }));
@@ -43,6 +44,22 @@ export const ref = {
   get supplierOpts() { return this.opt(this.suppliers); },
   get customerOpts() { return this.opt(this.customers); },
   get warehouseOpts() { return this.opt(this.warehouses.filter((w) => w.active)); },
+  /**
+   * 기본 사업장.
+   * 이 회사는 사업장이 하나입니다. 창고가 하나뿐이면 묻지 않고 그것을 씁니다 —
+   * 매번 같은 값을 고르게 하는 것은 일을 늘릴 뿐입니다.
+   * 창고를 더 만들면 그때부터 선택 칸이 다시 나타납니다.
+   */
+  get activeWarehouses() { return this.warehouses.filter((w) => w.active); },
+  get defaultWarehouseId() { return this.activeWarehouses[0]?.id || ""; },
+  get singleSite() { return this.activeWarehouses.length <= 1; },
+  /** 창고가 하나면 감추고, 여럿이면 고르게 하는 필드 정의입니다. */
+  warehouseField(key = "warehouseId", label = "창고", extra = {}) {
+    return this.singleSite
+      ? { key, type: "hidden", value: this.defaultWarehouseId }
+      : { key, label, type: "select", required: true, options: this.warehouseOpts,
+          value: this.defaultWarehouseId, ...extra };
+  },
   get projectOpts() { return this.opt(this.projects, (p) => `${p.name} · ${p.manager || "-"}`); },
   product: (id) => ref.products.find((row) => row.id === id),
   warehouse: (id) => ref.warehouses.find((row) => row.id === id),
@@ -56,6 +73,8 @@ export const ref = {
     if (need === "finance") return ref.canFinance;
     if (need === "prices") return ref.canPrices;
     if (need === "admin") return ref.me?.role === "admin";
+    // 창고가 하나뿐인 회사에는 창고 간 이동이 필요 없습니다. 기능은 남기고 메뉴에서만 뺍니다.
+    if (need === "multisite") return !ref.singleSite;
     return true;
   },
   can(area) {
@@ -323,12 +342,55 @@ function upcomingPanel(schedules) {
         : h("p.muted", { text: "오늘부터 2주 안에 잡힌 일정이 없습니다." })));
 }
 
+/* ---------- 홈 상단: 큰 검색창 + 오늘 확인할 항목 ---------------------------
+   ERP 에 들어와서 메뉴를 헤매지 않고 바로 자재를 찾게 하는 것이 이 화면의 일입니다.
+   그 아래에는 "지금 손대야 할 것" 만 둡니다 — 숫자를 늘어놓는 대신 누르면
+   그 일을 하는 화면으로 갑니다. */
+
+/** 통합검색으로 검색어를 들고 넘어가기 위한 자리입니다. */
+const searchHandoff = { query: "" };
+
+function homeSearch() {
+  const input = h("input", {
+    type: "search", placeholder: "어떤 자재가 필요한가요?  예: CV 2.5 4C · MCCB 100A 4P",
+    autocomplete: "off", spellcheck: "false",
+  });
+  const go = () => {
+    searchHandoff.query = input.value.trim();
+    openScreen("pur.search");
+  };
+  input.addEventListener("keydown", (event) => { if (event.key === "Enter") go(); });
+
+  return h("div.home-search", {},
+    h("i", { html: ICON_SEARCH }),
+    input,
+    h("button.btn.primary", { onclick: go }, "검색"),
+    h("button.btn", { onclick: () => openScreen("pur.quote") }, "견적 비교"));
+}
+
+/**
+ * 오늘 확인할 항목.
+ * 0 건은 흐리게 두되 숨기지 않습니다 — "확인했고 없다" 와 "화면에 없다" 는 다릅니다.
+ */
+function todayPanel(items) {
+  return h("div.today", {},
+    h("div.today-head", {}, h("h3", { text: "오늘 확인할 항목" }),
+      h("span.muted", { text: "누르면 처리 화면으로 갑니다" })),
+    h("div.today-items", {}, items.map((item) => h(`button.today-item${item.count ? `.on.tone-${item.tone}` : ""}`, {
+      onclick: item.go,
+      title: item.hint || "",
+    },
+      h("b", { text: fmt.int(item.count) }),
+      h("span", { text: item.label }),
+      item.hint ? h("small", { text: item.hint }) : null))));
+}
+
 const dashboard = panelScreen({
   crumb: "홈", title: "경영 현황",
   initialState: { span: "이번 달" },
   actions: () => [],
   async render(state, refresh) {
-    const [summary, inventory, orders, bidData, logs, reports, adjustments, salesRows, schedules] = await Promise.all([
+    const [summary, inventory, orders, bidData, logs, reports, adjustments, salesRows, schedules, priceAlerts] = await Promise.all([
       api("/api/summary"),
       api("/api/inventory"),
       api("/api/purchase-orders"),
@@ -341,6 +403,8 @@ const dashboard = panelScreen({
       api("/api/stock-adjustments"),
       ref.canFinance ? api("/api/sales-orders") : Promise.resolve([]),
       api(`/api/schedules?from=${today()}&to=${addDays(today(), 13)}`),
+      // 가격이 오른 품목은 다시 사기 전에 봐야 합니다.
+      api("/api/catalog/price-alerts?days=30&threshold=5").catch(() => []),
     ]);
 
     const incoming = orders.filter((order) => ["발주완료", "부분입고"].includes(order.status));
@@ -403,7 +467,33 @@ const dashboard = panelScreen({
     ];
     const toneOf = (value) => ({ 양호: "solid", 정상: "solid", 주의: "bad", 보통: "warn", 확인: "warn" }[value] || "mid");
 
+    // 90일 넘게 안 움직인 재고 — 자금이 잠긴 곳입니다.
+    const stale = inventory.filter((row) =>
+      row.on_hand > 0 && row.last_movement && row.last_movement < addDays(today(), -90));
+
     return [
+      /* ---------- 큰 검색창 — 메뉴를 헤매지 않고 바로 자재를 찾습니다 ---------- */
+      homeSearch(),
+
+      /* ---------- 오늘 확인할 항목 ---------- */
+      todayPanel([
+        { label: "부족 자재", count: shortage.length, tone: "bad",
+          hint: shortage.length ? `${shortage[0].product_name} 외` : "안전재고 이상",
+          go: () => openScreen("inv.status") },
+        { label: "입고 예정", count: summary.incomingOrders, tone: "accent",
+          hint: `미입고 ${fmt.int(sum(incoming, "remaining"))}`,
+          go: () => openScreen("pur.receive") },
+        { label: "승인 대기", count: waiting, tone: "warn",
+          hint: `요청 ${summary.pendingRequests} · 발주 ${summary.pendingApprovals}`,
+          go: () => openScreen(summary.pendingRequests ? "pur.request" : "pur.order") },
+        { label: "가격 오른 품목", count: priceAlerts.filter((row) => row.change > 0).length, tone: "warn",
+          hint: "최근 30일 · 5% 이상",
+          go: () => openScreen("pur.search") },
+        { label: "장기 재고", count: stale.length, tone: "mid",
+          hint: "90일 넘게 안 움직임",
+          go: () => openScreen("inv.status") },
+      ]),
+
       /* ---------- KPI 스트립 ---------- */
       h("div.metrics", {},
         metric({ label: "진행 중 공사", value: summary.activeProjects, unit: "건", name: "project", to: "base.project",
@@ -585,7 +675,7 @@ const invStatus = dataScreen({
   initialState: { warehouse: "", q: "", shortageOnly: "" },
   exportName: "재고현황",
   filters: (state, refresh) => [
-    fld("창고", select(state, "warehouse", ref.warehouseOpts, { onChange: refresh })),
+    ref.singleSite ? null : fld("창고", select(state, "warehouse", ref.warehouseOpts, { onChange: refresh })),
     fld("품목검색", input(state, "q", { placeholder: "품목명·코드·제조사", width: 200, onEnter: refresh })),
     fld("", h("label.field", { style: { gap: "5px" } },
       Object.assign(h("input", { type: "checkbox" }), {
@@ -615,7 +705,7 @@ const invStatus = dataScreen({
   columns: () => [
     { key: "product_id", label: "품목코드", cls: "code", width: 104 },
     { key: "product_name", label: "품목명 / 규격", cls: "strong ellip", width: 190, cell: (r) => `${esc(r.product_name)}<span class="muted"> · ${esc(r.manufacturer || "")}</span>` },
-    { key: "warehouse_name", label: "창고", width: 90 },
+    ...(ref.singleSite ? [] : [{ key: "warehouse_name", label: "창고", width: 90 }]),
     { key: "bin", label: "위치", width: 66, cls: "code" },
     { key: "on_hand", label: "현재고", align: "num", width: 68, sum: true },
     { key: "reserved", label: "예약", align: "num", width: 60, sum: true },
@@ -623,19 +713,33 @@ const invStatus = dataScreen({
     { key: "available", label: "가용", align: "num", width: 68, sum: true, cell: (r) => `<b>${fmt.int(r.available)}</b>` },
     { key: "expected", label: "예정", align: "num", width: 56, sum: true },
     { key: "safety_stock", label: "안전", align: "num", width: 56 },
-    { key: "last_movement", label: "최종이동", width: 76, cls: "code" },
+    ...(ref.canPrices ? [
+      { key: "last_buy_price", label: "최근 구매가", align: "num", width: 104,
+        cell: (r) => (r.last_buy_price ? fmt.won(r.last_buy_price) : '<span class="muted">-</span>') },
+    ] : []),
+    { key: "last_buy_supplier", label: "최근 구매처", width: 110, cls: "ellip",
+      cell: (r) => esc(r.last_buy_supplier || "-") },
+    { key: "last_receipt_at", label: "최근입고", width: 88, cls: "code",
+      cell: (r) => esc(r.last_receipt_at ? fmt.date(r.last_receipt_at) : "-") },
+    { key: "last_issue_at", label: "최근사용", width: 88, cls: "code",
+      cell: (r) => esc(r.last_issue_at ? fmt.date(r.last_issue_at) : "-") },
     { key: "_st", label: "상태", width: 92, sortable: false, cell: (r) => statusChip(r.shortage ? "부족" : "정상") },
     {
       key: "_actions", label: "업무", width: 184, sortable: false, noExport: true,
       cell: (r) => acts(
         ref.can("purchasing") && r.catalog_product_id ? act("구매", "primary") : null,
-        ref.can("warehouse") ? act("이동") : null,
+        ref.can("purchasing") && !r.catalog_product_id ? act("검색", "primary") : null,
         ref.can("warehouse") ? act("조정") : null,
       ),
     },
   ],
   rowActions: (refresh) => ({
     구매: (row) => inventoryPurchasePanel(row, refresh),
+    검색: (row) => {
+      // 카탈로그에 연결되지 않은 품목은 이름을 그대로 들고 통합검색으로 갑니다.
+      searchHandoff.query = row.spec || row.product_name || "";
+      openScreen("pur.search");
+    },
     이동: (row) => transferDialog(refresh, row),
     조정: (row) => adjustDialog(refresh, row),
   }),
@@ -726,7 +830,7 @@ const invLedger = dataScreen({
   filters: (state, refresh) => [
     dateRange(state, refresh),
     fld("품목", select(state, "productId", ref.productOpts, { width: 210, onChange: refresh })),
-    fld("창고", select(state, "warehouseId", ref.warehouseOpts, { onChange: refresh })),
+    ref.singleSite ? null : fld("창고", select(state, "warehouseId", ref.warehouseOpts, { onChange: refresh })),
     fld("유형", select(state, "type", Object.entries(TXN_LABEL).map(([value, label]) => ({ value, label })), { width: 120, onChange: refresh })),
   ],
   load: (state) => api(`/api/inventory/transactions?${new URLSearchParams(state)}`),
@@ -767,7 +871,9 @@ async function adjustDialog(refresh, preset = {}) {
     } : undefined,
     fields: [
       { key: "productId", label: "품목", type: "select", required: true, options: ref.productOpts, value: preset.product_id || "" },
-      { key: "warehouseId", label: "창고", type: "select", required: true, options: ref.warehouseOpts, value: preset.warehouse_id || "" },
+      preset.warehouse_id
+        ? { key: "warehouseId", type: "hidden", value: preset.warehouse_id }
+        : ref.warehouseField(),
       { key: "beforeQty", label: "현재고", type: "static", value: current, readonly: true },
       { key: "afterQty", label: "실사수량", type: "number", required: true, min: 0, value: current },
       { key: "adjustedAt", label: "조정일자", type: "date", value: today() },
@@ -884,7 +990,7 @@ async function allocateDialog(refresh, preset = {}) {
     fields: [
       { key: "projectId", label: "공사", type: "select", required: true, options: ref.projectOpts, value: preset.projectId || "" },
       { key: "productId", label: "품목", type: "select", required: true, options: ref.productOpts, onChange: (s) => { state.productId = s.productId; } },
-      { key: "warehouseId", label: "창고", type: "select", required: true, options: ref.warehouseOpts, onChange: (s) => { state.warehouseId = s.warehouseId; } },
+      ref.warehouseField("warehouseId", "창고", { onChange: (s) => { state.warehouseId = s.warehouseId; } }),
       { key: "quantity", label: "배정수량", type: "number", required: true, min: 1, value: 1 },
       { key: "allocatedAt", label: "배정일자", type: "date", value: today() },
       { key: "note", label: "비고", type: "textarea", full: true },
@@ -1913,6 +2019,8 @@ function catalogSearch() {
     el,
     refresh: async () => {
       if (!state.categories) state.categories = await api("/api/catalog/categories");
+      // 홈의 큰 검색창이나 재고 부족 화면에서 넘겨준 검색어가 있으면 그대로 씁니다.
+      if (searchHandoff.query) { searchInput.value = searchHandoff.query; searchHandoff.query = ""; }
       await run();
       setTimeout(() => searchInput.focus(), 40);
     },
@@ -2305,7 +2413,7 @@ const purRequest = dataScreen({
         { key: "supplierId", label: "공급처", type: "select", required: true, options: ref.supplierOpts, value: row.preferred_supplier_id || ref.suppliers.find((s) => s.name === ref.product(row.product_id)?.supplier)?.id || "" },
         { key: "unitPrice", label: "발주단가", type: "won", required: true, value: row.price || 0, unit: "원" },
         { key: "dueDate", label: "납기일", type: "date", value: row.requested_date || addDays(today(), 5) },
-        { key: "warehouseId", label: "입고예정창고", type: "select", options: ref.warehouseOpts, value: ref.warehouses[0]?.id || "" },
+        ref.warehouseField("warehouseId", "입고예정창고"),
       ],
       submitLabel: "승인하고 발주서 만들기",
       footNote: "승인하면 발주서가 생성되고 선택한 창고의 입고예정 수량이 늘어납니다.",
@@ -2342,6 +2450,214 @@ function pickProduct() {
     });
     $("#modal").addEventListener("close", () => resolve(null), { once: true });
   });
+}
+
+/* ---------- 규격 검수 -------------------------------------------------------
+   파서가 반만 읽은 제품을 사람이 확정합니다. 기계가 자신 없어 한 것을 그대로
+   두면 같은 물건이 두 줄로 남거나 엉뚱한 제품과 비교됩니다. */
+
+const reviewScreen = dataScreen({
+  crumb: "기준정보 > 규격 검수", title: "규격 확인이 필요한 제품",
+  exportName: "규격검수",
+  load: () => api("/api/catalog/review"),
+  summary: (rows) => strip([
+    ["확인 대기", `${rows.length}`, rows.length ? "warn" : ""],
+    ["규격을 못 읽음", `${rows.filter((row) => row.confidence === 0).length}`],
+    ["일부만 읽음", `${rows.filter((row) => row.confidence > 0 && row.confidence < 1).length}`],
+  ]),
+  columns: () => [
+    { key: "name", label: "제품명", cls: "strong ellip" },
+    { key: "raw_names", label: "업체가 적어 보낸 이름", cls: "ellip", cell: (r) => esc(r.raw_names || "-") },
+    { key: "category", label: "분류", width: 110, cell: (r) => esc(CATEGORY_LABELS[r.category] || r.category) },
+    { key: "spec_label", label: "읽어낸 규격", width: 170, cell: (r) => esc(r.spec_label || "-") },
+    {
+      key: "confidence", label: "신뢰도", width: 96,
+      cell: (r) => statusChip(r.confidence === 0 ? "못 읽음" : "일부만", r.confidence === 0 ? "bad" : "warn"),
+    },
+    { key: "supplier_count", label: "판매처", align: "num", width: 72 },
+    {
+      key: "_actions", label: "업무", width: 140, sortable: false, noExport: true,
+      cell: () => (ref.can("master") ? acts(act("확정", "primary"), act("사용안함", "danger")) : ""),
+    },
+  ],
+  rowActions: (refresh) => ({
+    확정: (row) => resolveDialog(row, refresh),
+    사용안함: async (row) => {
+      if (!await confirmAsk({
+        title: "제품 사용 안 함", danger: true, okLabel: "숨기기",
+        message: `${row.name} 을(를) 목록에서 숨깁니다. 기록은 남습니다.`,
+      })) return;
+      await guard(() => api(`/api/catalog/products/${encodeURIComponent(row.id)}`, { method: "DELETE" }),
+        "제품을 숨겼습니다.");
+      refresh();
+    },
+  }),
+  empty: {
+    title: "확인이 필요한 제품이 없습니다",
+    hint: "공급처 품목을 적재하면 규격을 읽지 못한 제품이 여기에 모입니다.",
+  },
+});
+
+/** 분류를 고르면 그 분류의 규격 칸이 나옵니다. 핵심 칸은 비울 수 없습니다. */
+function resolveDialog(row, refresh) {
+  const categories = Object.entries(CATEGORY_LABELS).map(([value, label]) => ({ value, label }));
+  const specHost = h("div.rv-specs");
+  const inputs = new Map();
+  let category = row.category;
+
+  function drawSpecs() {
+    const definition = (ref.categories || {})[category];
+    const fields = definition?.fields || row.fields || [];
+    const keyFields = definition?.keyFields || [];
+    inputs.clear();
+    specHost.replaceChildren(
+      h("div.rv-raw", {},
+        h("b", {}, "업체가 적어 보낸 이름"),
+        h("span", { text: row.raw_names || row.name })),
+      h("div.rv-grid", {}, fields.map((field) => {
+        const input = h("input.rv-input", {
+          type: field.numeric ? "number" : "text",
+          step: field.numeric ? "any" : undefined,
+          value: row.specs?.[field.key] !== undefined ? String(row.specs[field.key]) : "",
+          placeholder: field.unit ? `예: 2.5${field.unit}` : "",
+        });
+        inputs.set(field.key, input);
+        return h("label.rv-field", {},
+          h("span", {},
+            field.label,
+            keyFields.includes(field.key) ? h("i.req", {}, "*") : null,
+            field.unit ? h("small", { text: field.unit }) : null),
+          input);
+      })),
+      keyFields.length
+        ? h("p.muted", { text: `* 표시된 칸으로 같은 제품을 찾습니다. ${keyFields.length}개 모두 채워야 합니다.` })
+        : null);
+  }
+
+  drawSpecs();
+
+  return openForm({
+    title: "규격 확정",
+    sub: row.name,
+    width: "wide",
+    extra: { node: specHost },
+    fields: [
+      {
+        key: "category", label: "분류", type: "select", required: true, placeholder: false,
+        options: categories, value: row.category,
+        onChange: (state) => { category = state.category; drawSpecs(); },
+      },
+      { key: "manufacturer", label: "제조사", value: row.manufacturer || "" },
+      { key: "certification", label: "인증", value: row.certification || "", placeholder: "예: KS·KC" },
+    ],
+    submitLabel: "확정",
+    footNote: "확정하면 같은 규격의 제품과 하나로 묶이고, 통합검색·비교에 정상 제품으로 나옵니다.",
+    onSubmit: (values) => {
+      const specs = {};
+      for (const [key, input] of inputs) {
+        if (String(input.value).trim() !== "") specs[key] = input.value;
+      }
+      return api(`/api/catalog/products/${encodeURIComponent(row.id)}/resolve`, {
+        method: "PUT", body: { ...values, specs },
+      });
+    },
+  }).then((result) => { if (result) { toast(`${result.name} 규격을 확정했습니다.`); refresh(); } });
+}
+
+/* ---------- 거래처 일괄 등록 ------------------------------------------------
+   쓰던 명부를 엑셀에서 "다른 이름으로 저장 → CSV" 한 뒤 그대로 올립니다. */
+
+function partnerImport() {
+  const state = { kind: "suppliers", csv: "", filename: "", preview: null };
+  const body = h("div.screen-body");
+
+  const fileInput = h("input", { type: "file", accept: ".csv,text/csv", style: { display: "none" } });
+  fileInput.addEventListener("change", async () => {
+    const file = fileInput.files?.[0];
+    if (!file) return;
+    state.filename = file.name;
+    state.csv = await file.text();
+    await preview();
+  });
+
+  async function preview() {
+    if (!state.csv) return toast("CSV 파일을 선택해 주세요.", "err");
+    try {
+      state.preview = await api(`/api/partners/${state.kind}/import/preview`, {
+        method: "POST", body: { csv: state.csv, filename: state.filename },
+      });
+    } catch (error) {
+      state.preview = null;
+      toast(error.message, "err");
+    }
+    draw();
+  }
+
+  async function commit() {
+    const result = await guard(() => api(`/api/partners/${state.kind}/import`, {
+      method: "POST", body: { csv: state.csv, filename: state.filename },
+    }), null);
+    if (!result) return;
+    toast(`신규 ${result.summary.created}곳 · 보완 ${result.summary.updated}곳을 등록했습니다.`);
+    state.csv = "";
+    state.filename = "";
+    state.preview = null;
+    await ref.reload();
+    draw();
+  }
+
+  const label = () => (state.kind === "customers" ? "고객" : "공급처");
+
+  function draw() {
+    body.replaceChildren(...[
+      h("div.hdr-help", {},
+        h("b", { text: `${label()} 명부를 CSV 로 올립니다` }),
+        h("span", { text: "엑셀에서 '다른 이름으로 저장 → CSV(쉼표로 분리)' 한 파일을 그대로 쓰면 됩니다. " }),
+        h("span", { text: "첫 줄이 머리글이어야 하고, 업체명·사업자번호·담당자·전화·이메일·결제조건·비고를 알아서 찾습니다. " }),
+        h("span", { text: "이미 있는 업체는 비어 있는 칸만 채우고, 들어 있던 값은 덮어쓰지 않습니다." })),
+
+      h("div.imp-bar", {},
+        h("div.chipset", {}, [["suppliers", "공급처"], ["customers", "고객"]].map(([value, text]) =>
+          h(`button.chip${state.kind === value ? ".on" : ""}`, {
+            onclick: () => { state.kind = value; state.preview = null; draw(); },
+          }, text))),
+        h("div.grow"),
+        state.filename ? h("span.muted", { text: state.filename }) : null,
+        h("button.btn", { onclick: () => fileInput.click() }, "CSV 파일 선택"),
+        state.preview
+          ? h("button.btn.primary", { onclick: commit }, `${state.preview.summary.total}건 등록`)
+          : null),
+
+      state.preview
+        ? h("div.panel", {},
+          h("div.panel-head", {},
+            h("h3", { text: "미리보기" }),
+            h("span.muted", {
+              text: `신규 ${state.preview.summary.created} · 보완 ${state.preview.summary.updated} · 변화 없음 ${state.preview.summary.skipped}`,
+            })),
+          h("div.panel-body", {},
+            h("table.qt-items", {},
+              h("thead", {}, h("tr", {}, ...["업체명", "처리", "코드"].map((text) => h("th", { text })))),
+              h("tbody", {}, state.preview.preview.map((line) => h("tr", {},
+                h("td.strong", { text: line.name }),
+                h("td", {}, h(`span.tag${line.status === "신규" ? ".best" : ""}`, { text: line.status })),
+                h("td.muted", { text: line.id }))))),
+            h("p.muted", { style: { marginTop: "12px" }, text: "읽어낸 열: " + Object.keys(state.preview.mapped).join(", ") })))
+        : h("div.grid-empty", {},
+          h("b", { text: "CSV 파일을 선택하면 미리보기가 나옵니다" }),
+          h("span", { text: "실제로 등록하기 전에 무엇이 새로 들어가고 무엇이 보완되는지 먼저 보여 줍니다." })),
+      fileInput,
+    ].filter(Boolean));
+  }
+
+  const el = h("div.screen.scroll", {},
+    h("div.screen-head", {},
+      h("div", {}, h("div.crumb", { text: "기준정보 > 거래처 일괄 등록" }), h("h1", { text: "거래처 일괄 등록" })),
+      h("div.head-actions", {}, btn("공급처 목록", () => openScreen("base.supplier")))),
+    h("div"),
+    body);
+
+  return { el, refresh: async () => { draw(); } };
 }
 
 /* ---------- 발주서 (다품목) -------------------------------------------------
@@ -2685,8 +3001,8 @@ function receiveDialog(order, refresh) {
   };
 
   const table = h("table.ol.recv", {},
-    h("thead", {}, h("tr", {}, ...["#", "품목", "발주", "기입고", "미입고", "이번 입고", "적치위치"]
-      .map((label, index) => h(`th${[2, 3, 4, 5].includes(index) ? ".num" : ""}`, { text: label })))),
+    h("thead", {}, h("tr", {}, ...["#", "품목", "발주", "기입고", "미입고", "이번 입고", "불량·오배송", "적치위치"]
+      .map((label, index) => h(`th${[2, 3, 4, 5, 6].includes(index) ? ".num" : ""}`, { text: label })))),
     h("tbody", {}, pending.map((line) => {
       const qty = h("input.recv-qty", {
         type: "number", min: "0", max: String(line.remaining), value: String(line.remaining),
@@ -2695,6 +3011,9 @@ function receiveDialog(order, refresh) {
       inputs.set(line.id, qty);
       const bin = h("input.recv-bin", { type: "text", placeholder: "A-01-03" });
       inputs.set(`${line.id}:bin`, bin);
+      // 받긴 받았는데 못 쓰는 수량입니다. 재고에는 안 들어가고 기록만 남습니다.
+      const defect = h("input.recv-qty.defect", { type: "number", min: "0", value: "0" });
+      inputs.set(`${line.id}:defect`, defect);
       return h("tr", {},
         h("td.code", { text: String(line.line_no) }),
         h("td.strong", { text: line.product_name || line.product_id }),
@@ -2702,6 +3021,7 @@ function receiveDialog(order, refresh) {
         h("td.num", { text: fmt.int(line.received) }),
         h("td.num", {}, h("b", { text: fmt.int(line.remaining) })),
         h("td.num", {}, qty),
+        h("td.num", {}, defect),
         h("td", {}, bin));
     })));
 
@@ -2725,12 +3045,13 @@ function receiveDialog(order, refresh) {
     width: "xwide",
     extra: { node: h("div", {}, quickButtons, table) },
     fields: [
-      { key: "warehouseId", label: "입고창고", type: "select", required: true, options: ref.warehouseOpts, value: ref.warehouses[0]?.id || "" },
+      ref.warehouseField("warehouseId", "입고창고"),
       { key: "receivedAt", label: "입고일자", type: "date", value: today() },
       { key: "note", label: "검수 비고", type: "textarea", full: true, placeholder: "불량·오배송이 있으면 여기에 적어 주세요" },
     ],
     submitLabel: "입고 확정",
-    footNote: "안 온 품목은 0 으로 두세요. 이번에 받은 수량만 재고로 잡히고, 나머지는 미입고로 남습니다.",
+    footNote: "안 온 품목은 0 으로 두세요. 이번에 받은 수량만 재고로 잡히고, 나머지는 미입고로 남습니다. "
+      + "불량·오배송은 받은 수량 중 못 쓰는 몫을 적어 두면 입고내역에 남습니다.",
     onSubmit: (values) => api(`/api/purchase-orders/${encodeURIComponent(order.id)}/receive`, {
       method: "POST",
       body: {
@@ -2738,6 +3059,8 @@ function receiveDialog(order, refresh) {
         lines: pending.map((line) => ({
           lineId: line.id,
           quantity: Number(inputs.get(line.id).value) || 0,
+          defectQty: Number(inputs.get(`${line.id}:defect`).value) || 0,
+          defectKind: Number(inputs.get(`${line.id}:defect`).value) ? "불량·오배송" : undefined,
           bin: inputs.get(`${line.id}:bin`).value || undefined,
         })).filter((line) => line.quantity > 0),
       },
@@ -4093,14 +4416,14 @@ export const MODULES = [
   { id: "home", name: "홈", groups: [{ items: [["home.dashboard", "경영 현황"], ["home.calendar", "작업 일정"]] }] },
   {
     id: "inventory", name: "재고", groups: [
-      { name: "재고관리", items: [["inv.status", "재고현황"], ["inv.ledger", "재고수불부"], ["inv.transfer", "재고이동"], ["inv.adjust", "재고조정"], ["inv.allocation", "공사별 자재배정"]] },
+      { name: "재고관리", items: [["inv.status", "재고현황"], ["inv.ledger", "재고수불부"], ["inv.adjust", "재고조정"], ["inv.allocation", "공사별 자재배정"], ["inv.transfer", "재고이동", "multisite"]] },
       { name: "기준정보", items: [["base.warehouse", "창고등록"], ["base.catalog", "품목 마스터"]] },
     ],
   },
   {
     id: "purchase", name: "구매", groups: [
       { name: "구매관리", items: [["pur.search", "자재 통합검색"], ["pur.quote", "견적 비교"], ["pur.request", "구매요청"], ["pur.order", "발주서"], ["pur.receive", "입고처리"], ["pur.receipts", "입고내역"]] },
-      { name: "기준정보", items: [["base.supplier", "공급처등록"], ["base.import", "공급처 품목 등록"], ["base.catalog", "품목 마스터"]] },
+      { name: "기준정보", items: [["base.supplier", "공급처등록"], ["base.partners", "거래처 일괄 등록"], ["base.import", "공급처 품목 등록"], ["base.catalog", "품목 마스터"], ["base.review", "규격 검수"]] },
     ],
   },
   {
@@ -4151,6 +4474,8 @@ export const SCREENS = {
   "base.project": { title: "공사등록", build: baseProject },
   "pur.search": { title: "자재 통합검색", build: purSearch },
   "base.import": { title: "공급처 품목 등록", build: baseImport },
+  "base.review": { title: "규격 검수", build: reviewScreen },
+  "base.partners": { title: "거래처 일괄 등록", build: partnerImport },
   "base.catalog": { title: "품목 마스터", build: baseCatalog },
   "pur.quote": { title: "견적 비교", build: quoteScreen },
   "pur.request": { title: "구매요청", build: purRequest },

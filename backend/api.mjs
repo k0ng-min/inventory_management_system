@@ -15,6 +15,7 @@ import {
   listCarts, getCart, cartItems, createCart, addItem, updateItem,
   removeItem, removeCart, compareCart, requestFromQuote,
 } from "./quotes.mjs";
+import { importPartners, reviewQueue, resolveProduct, retireProduct } from "./partners.mjs";
 import { ingestSupplierCatalog, rowsFromCsv } from "./ingest.mjs";
 import { CATEGORIES } from "./catalog.mjs";
 import { shopStatus, probe as g2bProbe, syncShoppingMall, SHOP_OPERATIONS } from "./g2b-shop.mjs";
@@ -330,13 +331,28 @@ const resources = {
 /* domain reads                                                        */
 /* ------------------------------------------------------------------ */
 
+/**
+ * 재고현황.
+ * 요구사항 15: 현재고 옆에 "얼마에 어디서 샀고, 언제 들어와서 언제 나갔는지" 가
+ * 같이 보여야 다시 살 때 판단이 선다. 네 값을 스칼라 서브쿼리로 붙입니다.
+ */
 const INVENTORY_SQL = `
   SELECT (b.product_id || '|' || b.warehouse_id) AS id,
          b.product_id, p.catalog_product_id, b.warehouse_id, b.bin, b.on_hand, b.reserved, b.allocated, b.expected,
          b.safety_stock, b.last_movement,
          p.name AS product_name, p.unit, p.price, p.manufacturer, p.category, p.spec,
          w.name AS warehouse_name,
-         (b.on_hand - b.reserved - b.allocated) AS available
+         (b.on_hand - b.reserved - b.allocated) AS available,
+         (SELECT h.price FROM price_history h
+           WHERE h.product_id = p.catalog_product_id AND h.ref_type = 'PO'
+           ORDER BY h.id DESC LIMIT 1) AS last_buy_price,
+         (SELECT s.name FROM price_history h LEFT JOIN suppliers s ON s.id = h.supplier_id
+           WHERE h.product_id = p.catalog_product_id AND h.ref_type = 'PO'
+           ORDER BY h.id DESC LIMIT 1) AS last_buy_supplier,
+         (SELECT MAX(g.received_at) FROM goods_receipts g
+           WHERE g.product_id = b.product_id AND g.warehouse_id = b.warehouse_id) AS last_receipt_at,
+         (SELECT MAX(t.at) FROM inventory_transactions t
+           WHERE t.product_id = b.product_id AND t.warehouse_id = b.warehouse_id AND t.qty < 0) AS last_issue_at
   FROM inventory_balances b
   JOIN products p ON p.id = b.product_id
   JOIN warehouses w ON w.id = b.warehouse_id`;
@@ -356,6 +372,13 @@ const REQUEST_SQL = `
 
 const SUMMARY_MONEY = ["inventoryValue", "purchaseAmount", "salesAmount", "monthSales", "monthPurchase", "receivable", "payable"];
 
+/** 오늘로부터 n일 뒤(음수면 전) 날짜. 문자열 비교로 쓸 수 있게 YYYY-MM-DD 로 돌려줍니다. */
+function addDaysIso(days) {
+  const date = new Date();
+  date.setDate(date.getDate() + days);
+  return date.toLocaleString("sv-SE").slice(0, 10);
+}
+
 function summary() {
   const inventory = inventoryRows();
   const receivable = get(`SELECT COALESCE(SUM(amount - received),0) AS n FROM sales_orders WHERE amount > received`).n;
@@ -374,6 +397,10 @@ function summary() {
     monthPurchase: get("SELECT COALESCE(SUM(debit),0) n FROM accounting_entries WHERE type IN ('매입','경비') AND substr(date,1,7) = ?", month).n,
     receivable,
     payable,
+    // 90일 넘게 움직이지 않은 재고 — 묵혀 두면 자금이 잠깁니다.
+    staleItems: inventory.filter((row) =>
+      row.on_hand > 0 && row.last_movement && row.last_movement < addDaysIso(-90)).length,
+    warehouseCount: get("SELECT COUNT(*) n FROM warehouses WHERE active = 1").n,
     openBids: get("SELECT COUNT(*) n FROM bid_notices WHERE date(substr(close_date,1,10)) >= date('now','localtime')").n,
     starredBids: get("SELECT COUNT(*) n FROM bid_notices WHERE starred = 1").n,
   };
@@ -1093,6 +1120,29 @@ export async function handleApi(request, response, url) {
   if (method === "DELETE" && /^\/api\/schedules\/[^/]+$/.test(path)) {
     requireRole(user, "schedule");
     return json(response, 200, removeSchedule(seg(url, 3), user.name));
+  }
+
+  /* ---- 거래처 일괄 등록 · 규격 검수 ---- */
+
+  if (method === "POST" && /^\/api\/partners\/(suppliers|customers)\/import(\/preview)?$/.test(path)) {
+    requireRole(user, "master");
+    const kind = seg(url, 3);
+    const dryRun = path.endsWith("/preview");
+    return json(response, dryRun ? 200 : 201, importPartners({
+      kind, csv: String(body.csv || ""), filename: str(body.filename), user: user.name, dryRun,
+    }));
+  }
+
+  if (method === "GET" && path === "/api/catalog/review") {
+    return json(response, 200, reviewQueue());
+  }
+  if (method === "PUT" && /^\/api\/catalog\/products\/[^/]+\/resolve$/.test(path)) {
+    requireRole(user, "master");
+    return json(response, 200, resolveProduct(seg(url, 4), body, user.name));
+  }
+  if (method === "DELETE" && /^\/api\/catalog\/products\/[^/]+$/.test(path)) {
+    requireRole(user, "master");
+    return json(response, 200, retireProduct(seg(url, 4), user.name));
   }
 
   /* ---- 견적함 · 업체별 견적 비교 ---- */

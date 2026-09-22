@@ -324,12 +324,18 @@ export function receiveOrder(id, body, user, hooks = {}) {
           str(input.bin), line.product_id, warehouseId);
       }
 
+      // 불량·오배송은 받은 수량 중 못 쓰는 몫입니다. 재고에는 이미 안 넣었고
+      // 여기서는 "왜 모자란지" 를 남깁니다. 발주 잔량은 그만큼 다시 살아납니다.
+      const defectQty = Math.max(0, int(input.defectQty));
+      if (defectQty > quantity) fail(`${line.product_name || line.product_id}: 불량 수량이 입고 수량보다 많습니다.`);
+
       const receiptId = `${batchId}-${String(line.line_no).padStart(2, "0")}`;
       run(`INSERT INTO goods_receipts
-             (id, order_id, line_id, batch_id, warehouse_id, product_id, quantity, received_at, receiver, note)
-           VALUES (?,?,?,?,?,?,?,?,?,?)`,
+             (id, order_id, line_id, batch_id, warehouse_id, product_id, quantity,
+              received_at, receiver, defect_qty, defect_kind, note)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
         receiptId, id, line.id, batchId, warehouseId, line.product_id, quantity,
-        receivedAt, user.name, str(body.note));
+        receivedAt, user.name, defectQty, defectQty ? (str(input.defectKind) || "불량") : null, str(body.note));
 
       batchAmount += line.unit_price * quantity;
       hooks.onLineReceived?.({ order, line, quantity, receivedAt, user });

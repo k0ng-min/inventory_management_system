@@ -1393,3 +1393,70 @@ table.ol.edit td:first-child { min-width: 220px; }
 }
 .paper-sum span { font-size: 13px; color: var(--fg-2); }
 .paper-sum b { font-size: 17px; font-weight: 700; letter-spacing: -0.01em; }
+
+/* ==========================================================================
+   홈 상단 — 큰 검색창 · 오늘 확인할 항목
+   ERP 에 들어와 메뉴를 헤매지 않고 바로 자재를 찾게 하는 것이 이 자리의 일입니다.
+   ========================================================================== */
+
+.home-search {
+  display: flex; align-items: center; gap: 10px; padding: 14px 18px; margin-bottom: 16px;
+  background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-card);
+}
+.home-search i { display: flex; color: var(--fg-3); flex: none; }
+.home-search input {
+  flex: 1; min-width: 0; height: 40px; border: 0; background: none; outline: none;
+  font: inherit; font-size: 17px; color: var(--fg);
+}
+.home-search input::placeholder { color: var(--fg-3); font-size: 16px; }
+.home-search:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-wash); }
+
+.today { margin-bottom: 20px; }
+.today-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 10px; }
+.today-head h3 { margin: 0; font-size: 14px; font-weight: 600; }
+.today-head .muted { font-size: 12px; }
+.today-items { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; }
+.today-item {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 2px;
+  padding: 14px 16px; text-align: left; cursor: pointer;
+  background: var(--surface-2); border: 1px solid var(--line); border-radius: var(--r-card);
+}
+.today-item:hover { border-color: var(--accent-line); background: var(--surface); }
+.today-item b { font-size: 26px; font-weight: 700; letter-spacing: -0.02em; color: var(--fg-3); font-variant-numeric: tabular-nums; }
+.today-item span { font-size: 13px; color: var(--fg-2); font-weight: 500; }
+.today-item small { font-size: 11px; color: var(--fg-3); }
+.today-item.on b { color: var(--fg); }
+.today-item.on.tone-bad { border-color: var(--danger-line); background: var(--danger-wash); }
+.today-item.on.tone-bad b { color: var(--danger); }
+.today-item.on.tone-warn { border-color: var(--warn-line); background: var(--warn-wash); }
+.today-item.on.tone-warn b { color: var(--warn); }
+.today-item.on.tone-accent { border-color: var(--accent-line); background: var(--accent-wash); }
+.today-item.on.tone-accent b { color: var(--accent-deep); }
+
+/* 규격 검수 · 거래처 적재 */
+.rv-raw {
+  padding: 11px 14px; margin-bottom: 14px; font-size: 13px; color: var(--fg-2);
+  background: var(--surface-2); border: 1px solid var(--line); border-radius: var(--r-md);
+}
+.rv-raw b { display: block; font-size: 12px; color: var(--fg-3); font-weight: 500; margin-bottom: 4px; }
+.rv-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px; }
+.rv-field { display: flex; flex-direction: column; gap: 5px; }
+.rv-field > span { display: flex; align-items: baseline; gap: 4px; font-size: 12px; color: var(--fg-2); }
+.rv-field .req { color: var(--danger); font-style: normal; }
+.rv-field small { color: var(--fg-3); }
+.rv-input {
+  height: 38px; padding: 0 11px; font: inherit; font-size: 14px;
+  border: 1px solid var(--surface-4); border-radius: var(--r-md); background: var(--surface);
+}
+.rv-input:focus { outline: 2px solid var(--accent-soft); outline-offset: -1px; }
+.rv-specs .muted { margin: 12px 0 0; font-size: 12px; }
+
+.imp-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 16px 0; }
+.imp-bar .muted { font-size: 13px; }
+.recv-qty.defect { width: 84px; }
+.recv-qty.defect:not([value="0"]) { border-color: var(--warn-line); }
+
+@media (max-width: 1080px) {
+  .today-items { grid-template-columns: repeat(2, 1fr); }
+  .home-search input { font-size: 15px; }
+}
