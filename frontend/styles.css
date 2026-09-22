@@ -1532,3 +1532,34 @@ table.ol.edit td:first-child { min-width: 220px; }
   .today-items { grid-template-columns: repeat(2, 1fr); }
   .home-search input { font-size: 15px; }
 }
+
+/* ==========================================================================
+   인사 — 휴가 관리
+   누가 며칠 썼고 며칠 남았는지를 막대 하나로 읽게 합니다.
+   ========================================================================== */
+
+.hr-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 14px; padding: 0 24px 24px; }
+.hr-card {
+  display: flex; flex-direction: column; gap: 12px; padding: 18px;
+  background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-card);
+}
+.hr-card-head { display: flex; align-items: center; gap: 8px; }
+.hr-card-head b { font-size: 15px; font-weight: 600; }
+
+.hr-figs { display: flex; gap: 20px; flex-wrap: wrap; }
+.hr-fig { display: flex; flex-direction: column; gap: 2px; }
+.hr-fig > span { font-size: 11px; color: var(--fg-3); }
+.hr-fig > b { font-size: 17px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.hr-fig > b.rest { color: var(--ok); }
+.hr-fig > b.over { color: var(--danger); }
+
+.hr-bar { height: 6px; border-radius: 999px; background: var(--surface-3); overflow: hidden; }
+.hr-bar i { display: block; height: 100%; background: var(--accent); border-radius: 999px; }
+.hr-bar i.over { background: var(--danger); }
+
+.hr-rows { display: flex; flex-direction: column; gap: 5px; }
+.hr-row { display: flex; align-items: baseline; gap: 9px; font-size: 12.5px; color: var(--fg-2); }
+.hr-row time { color: var(--fg-3); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.hr-row span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hr-row em { font-style: normal; color: var(--fg-3); font-variant-numeric: tabular-nums; }
+.hr-row.future span { color: var(--accent-deep); font-weight: 500; }

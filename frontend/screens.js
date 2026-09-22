@@ -2153,6 +2153,7 @@ function catalogImport() {
     supplierId: "", filename: "", csv: "", preview: null, apiQuery: "전선",
     sources: null, busy: null, catalogOnly: false,
     mallId: "", categoryNo: "", pages: 4, detail: true, categories: [],
+    standard: null,
   };
   const body = h("div.screen-body");
   const supplierPick = h("div");
@@ -2267,8 +2268,57 @@ function catalogImport() {
       box, "단가 없이 품목만 등록");
   }
 
+  /** 표준 규격으로 카탈로그를 한 번에 채웁니다. 키도 인터넷도 필요 없습니다. */
+  async function fillStandard() {
+    const summary = state.standard;
+    if (!await confirmAsk({
+      title: "표준 규격으로 채우기",
+      okLabel: `${summary?.missing ?? 0}건 채우기`,
+      message: `전선·차단기·전선관·터미널·배선기구의 KS 표준 규격 ${summary?.missing ?? 0}건을 자재 목록에 넣습니다. `
+        + "이미 있는 규격은 건드리지 않습니다.",
+    })) return;
+    const result = await guard(() => api("/api/catalog/standard/fill", { method: "POST", body: {} }), null);
+    if (!result) return;
+    toast(`표준 규격 ${result.created}건을 채웠습니다.`);
+    state.standard = await api("/api/catalog/standard");
+    draw();
+  }
+
+  /* 표준 규격 카드 — 제조사 사이트는 긁을 수 없지만, 전기자재는 규격이 표준으로
+     정해져 있어 규격표를 펼치면 카탈로그가 한 번에 찹니다. */
+  function standardCard() {
+    const summary = state.standard;
+    if (!summary) return h("div.panel", {}, h("div.panel-body", {}, h("p.muted", { text: "표준 규격을 세는 중…" })));
+    const done = summary.missing === 0;
+
+    return h("div.panel", {},
+      h("div.panel-head", {},
+        h("h3", { text: "표준 규격으로 채우기" }),
+        h("span.muted", { text: "인터넷·인증키 없이 바로" }),
+        ref.can("master") && !done
+          ? h("button.btn.primary.sm", { onclick: fillStandard }, `${summary.missing}건 채우기`)
+          : h("span.tag.best", { text: `${summary.total}건 모두 들어 있음` })),
+      h("div.panel-body", {},
+        h("p.muted", {
+          style: { margin: "0 0 14px" },
+          text: "전기자재는 KS·IEC 표준으로 규격이 정해져 있습니다. 제조사 사이트를 긁지 않고도 "
+            + "전선·차단기·전선관·터미널·배선기구의 규격을 통째로 넣을 수 있습니다. "
+            + "가격은 나중에 단가표나 가격 소스로 덧씌우면 됩니다.",
+        }),
+        h("table.qt-items", {},
+          h("thead", {}, h("tr", {}, ...["분류", "표준 규격", "아직 없음", "주요 제조사"]
+            .map((label, index) => h(`th${index === 1 || index === 2 ? ".num" : ""}`, { text: label })))),
+          h("tbody", {}, summary.rows.map((row) => h("tr", {},
+            h("td.strong", { text: row.label }),
+            h("td.num", { text: fmt.int(row.total) }),
+            h("td.num", {}, row.missing
+              ? h("b.short", { text: fmt.int(row.missing) })
+              : h("span.muted", { text: "0" })),
+            h("td.muted", { text: (row.makers || []).join(", ") || "-" })))))));
+  }
+
   function draw() {
-    const parts = [];
+    const parts = [standardCard()];
 
     /* ── 소스 1. 온라인 자재몰 수집 (인증키 없이 동작) ── */
     const mallStatus = state.sources?.mall;
@@ -2404,10 +2454,12 @@ function catalogImport() {
   }
 
   async function refresh() {
-    const [suppliers, imports, sources] = await Promise.all([
+    const [suppliers, imports, sources, standard] = await Promise.all([
       api("/api/suppliers"), api("/api/catalog/imports"), api("/api/catalog/sources"),
+      api("/api/catalog/standard").catch(() => null),
     ]);
     state.sources = sources;
+    state.standard = standard;
     if (!state.mallId) {
       state.mallId = sources.mall?.malls?.[0]?.id || "";
       loadCategories();            // 목록이 도착하면 스스로 다시 그립니다
@@ -2446,8 +2498,8 @@ function catalogImport() {
 
   const el = h("div.screen.scroll", {},
     h("div.screen-head", {},
-      h("div", {}, h("div.crumb", { text: "기준정보 > 공급처 품목 등록" }), h("h1", { text: "공급처 판매품목 적재" })),
-      h("div.head-actions", {}, h("button.btn", { onclick: () => openScreen("pur.search") }, "통합검색"))),
+      h("div", {}, h("div.crumb", { text: "자재 > 자재 채우기" }), h("h1", { text: "자재 채우기" })),
+      h("div.head-actions", {}, h("button.btn", { onclick: () => openScreen("pur.search") }, "자재 찾기"))),
     h("div"),
     body);
 
@@ -2570,6 +2622,135 @@ function pickProduct() {
     $("#modal").addEventListener("close", () => resolve(null), { once: true });
   });
 }
+
+/* ---------- 인사 · 휴가 관리 ------------------------------------------------
+   직원 다섯 명짜리 회사라 결재 단계를 여러 개 두지 않습니다. 여기서 보는 것은
+   "누가 며칠 썼고 며칠 남았나" 와 "언제 누가 쉬나" 둘뿐입니다.
+   휴가는 일정표의 '휴가' 와 같은 줄이라, 여기서 넣으면 달력에도 바로 뜹니다. */
+
+function leaveScreen() {
+  const state = { year: String(new Date().getFullYear()), data: null };
+  const body = h("div.screen-body");
+
+  async function refresh() {
+    state.data = await api(`/api/hr/leaves?year=${encodeURIComponent(state.year)}`);
+    draw();
+  }
+
+  /** 휴가 넣기 — 일정표의 휴가와 같은 자료를 만듭니다. */
+  function addLeave(preset = {}) {
+    return openForm({
+      title: "휴가 등록",
+      sub: "등록하면 일정표에도 바로 표시됩니다",
+      fields: [
+        { key: "assignees", label: "직원", type: "select", required: true,
+          options: (state.data?.people || []).filter((p) => p.active).map((p) => ({ value: p.name, label: p.name })),
+          value: preset.name || "" },
+        { key: "title", label: "사유", required: true, value: preset.name ? `${preset.name} 연차` : "",
+          placeholder: "예: 연차 · 반차 · 경조사" },
+        { key: "startDate", label: "시작일", type: "date", required: true, value: preset.date || today() },
+        { key: "endDate", label: "종료일", type: "date", value: preset.date || today() },
+        { key: "note", label: "메모", type: "textarea", full: true },
+      ],
+      submitLabel: "등록",
+      footNote: "종료일을 비우면 하루짜리로 잡힙니다. 연차 일수는 시작일부터 종료일까지 날짜 수로 셉니다.",
+      onSubmit: (values) => api("/api/schedules", { method: "POST", body: { ...values, kind: "leave" } }),
+    }).then((result) => { if (result) { toast("휴가를 등록했습니다."); refresh(); } });
+  }
+
+  function quotaDialog(person) {
+    return openForm({
+      title: "연차 한도",
+      sub: person.name,
+      fields: [{ key: "days", label: "연차 일수", type: "number", required: true, min: 0, max: 365, value: person.quota, unit: "일" }],
+      submitLabel: "저장",
+      onSubmit: (values) => api(`/api/hr/quota/${encodeURIComponent(person.id)}`, { method: "PUT", body: values }),
+    }).then((result) => { if (result) { toast(`${person.name} 연차를 ${result.annual_leave}일로 바꿨습니다.`); refresh(); } });
+  }
+
+  /** 직원 카드 — 한도·사용·잔여를 막대 하나로 보여 줍니다. */
+  function personCard(person) {
+    const over = person.used > person.quota;
+    return h("div.hr-card", {},
+      h("div.hr-card-head", {},
+        h("b", { text: person.name }),
+        h("span.tag", { text: roleLabel(person.role) }),
+        person.active ? null : h("span.tag.warn", {}, "비활성"),
+        h("div.grow"),
+        ref.allows("admin")
+          ? h("button.btn.sm", { onclick: () => quotaDialog(person) }, "연차 한도")
+          : null),
+      h("div.hr-figs", {},
+        h("div.hr-fig", {}, h("span", {}, "사용"), h(`b${over ? ".over" : ""}`, { text: `${person.used}일` })),
+        h("div.hr-fig", {}, h("span", {}, "남음"), h("b.rest", { text: `${person.remaining}일` })),
+        h("div.hr-fig", {}, h("span", {}, "한도"), h("b", { text: `${person.quota}일` })),
+        person.upcoming
+          ? h("div.hr-fig", {}, h("span", {}, "예정"), h("b", { text: `${person.upcoming}일` }))
+          : null),
+      h("div.hr-bar", { title: `${person.rate}% 사용` },
+        h(`i${over ? ".over" : ""}`, { style: { width: `${Math.min(100, person.rate)}%` } })),
+      h("div.hr-rows", {}, person.rows.length
+        ? person.rows.slice(0, 5).map((row) => h(`div.hr-row${row.future ? ".future" : ""}`, {},
+          h("time", { text: row.start_date === row.end_date ? fmt.date(row.start_date)
+            : `${fmt.date(row.start_date)}~${fmt.date(row.end_date)}` }),
+          h("span", { text: row.title }),
+          h("em", { text: `${row.days}일` })))
+        : [h("p.muted", { style: { margin: 0, fontSize: "12.5px" }, text: "올해 쓴 휴가가 없습니다." })]),
+      ref.can("schedule")
+        ? h("button.btn.sm.primary", { onclick: () => addLeave({ name: person.name }) }, "휴가 등록")
+        : null);
+  }
+
+  function draw() {
+    const data = state.data;
+    if (!data) return body.replaceChildren(h("p.muted", { text: "불러오는 중…" }));
+
+    const totalUsed = data.people.reduce((sum, p) => sum + p.used, 0);
+    const totalQuota = data.people.filter((p) => p.active).reduce((sum, p) => sum + p.quota, 0);
+
+    body.replaceChildren(...[
+      strip([
+        ["직원", `${data.people.filter((p) => p.active).length}명`],
+        ["올해 휴가", `${data.count}건`],
+        ["사용 일수", `${totalUsed}일`],
+        ["전체 한도", `${totalQuota}일`],
+      ]),
+      data.unmatched.length
+        ? h("div.cmp-warn", {
+          text: `직원 목록에 없는 이름으로 잡힌 휴가가 ${data.unmatched.length}건 있습니다: `
+            + data.unmatched.map((row) => `${row.assignees || "담당자 없음"}(${row.start_date})`).join(", ")
+            + " — 일정표에서 담당자를 고쳐 주세요.",
+        })
+        : null,
+      h("div.hr-grid", {}, data.people.map(personCard)),
+    ].filter(Boolean));
+  }
+
+  const yearSelect = () => {
+    const now = new Date().getFullYear();
+    const years = [now - 1, now, now + 1].map((y) => ({ value: String(y), label: `${y}년` }));
+    const control = makeSelect({ options: years, value: state.year, allowEmpty: false });
+    control.addEventListener("change", () => { state.year = control.value; refresh(); });
+    return control;
+  };
+
+  const el = h("div.screen.scroll", {},
+    h("div.screen-head", {},
+      h("div", {}, h("div.crumb", { text: "인사 > 휴가 관리" }), h("h1", { text: "휴가 관리" })),
+      h("div.head-actions", {}, ...[
+        yearSelect(),
+        ref.can("schedule") ? h("button.btn.primary", { onclick: () => addLeave() }, "＋ 휴가 등록") : null,
+        h("button.btn", { onclick: () => openScreen("home.calendar") }, "일정표"),
+      ].filter(Boolean))),
+    h("div"),
+    body);
+
+  return { el, refresh };
+}
+
+const roleLabel = (role) => ({
+  admin: "관리자", purchasing: "구매담당", warehouse: "창고담당", viewer: "조회전용",
+}[role] || role);
 
 /* ---------- 규격 검수 -------------------------------------------------------
    파서가 반만 읽은 제품을 사람이 확정합니다. 기계가 자신 없어 한 것을 그대로
@@ -4532,9 +4713,8 @@ export const MODULES = [
   /* 메뉴 규칙 넷.
      1. 한 화면은 한 곳에만 둔다.
      2. 이름은 하는 일 그대로 — '마스터' 같은 말은 쓰지 않는다.
-     3. 묶음 제목은 꼭 필요할 때만 (권한이 갈리는 곳). 세 줄짜리 목록에
-        제목까지 붙이면 읽을 것만 늘어난다.
-     4. 자주 쓰는 순서로 — 찾기 → 사기 → 받기 → 쓰기. */
+     3. 묶음 제목은 일의 단계가 갈리는 곳에만.
+     4. 업무 흐름 순서로 — 찾기 → 사기 → 받기 → 쓰기. */
   {
     id: "home", name: "홈", groups: [{
       // 경영 수치는 사장 몫입니다. 직원은 '오늘 할 일' 과 일정표를 봅니다.
@@ -4542,16 +4722,19 @@ export const MODULES = [
     }],
   },
   {
-    id: "materials", name: "자재", groups: [{
-      items: [["pur.search", "자재 찾기·가격비교"], ["pur.quote", "견적 비교"],
-        ["base.catalog", "자재 목록"], ["base.import", "자재 채우기"], ["base.review", "규격 확인"]],
-    }],
-  },
-  {
-    id: "purchase", name: "구매", groups: [{
-      items: [["pur.request", "구매요청"], ["pur.order", "발주서"],
-        ["pur.receive", "입고 처리"], ["pur.receipts", "입고 내역"]],
-    }],
+    // 자재를 찾는 일과 사는 일은 끊기지 않는 한 줄기라 한 메뉴에 둡니다.
+    id: "purchase", name: "자재·구매", groups: [
+      {
+        name: "찾고 사기",
+        items: [["pur.search", "자재 찾기·가격비교"], ["pur.quote", "견적 비교"],
+          ["pur.request", "구매요청"], ["pur.order", "발주서"],
+          ["pur.receive", "입고 처리"], ["pur.receipts", "입고 내역"]],
+      },
+      {
+        name: "자재 데이터",
+        items: [["base.catalog", "자재 목록"], ["base.import", "자재 채우기"], ["base.review", "규격 확인"]],
+      },
+    ],
   },
   {
     id: "inventory", name: "재고", groups: [{
@@ -4568,6 +4751,11 @@ export const MODULES = [
   {
     id: "partner", name: "거래처", groups: [{
       items: [["base.supplier", "공급처"], ["base.customer", "고객"], ["base.partners", "명부 일괄 등록"]],
+    }],
+  },
+  {
+    id: "hr", name: "인사", groups: [{
+      items: [["hr.leave", "휴가 관리"], ["home.calendar", "일정표"], ["sys.user", "직원·권한", "admin"]],
     }],
   },
   {
@@ -4589,9 +4777,9 @@ export const MODULES = [
   },
   {
     id: "system", name: "설정", groups: [{
-      items: [["sys.password", "비밀번호 변경"], ["sys.user", "사용자·권한"], ["sys.connector", "가격 소스 연동"],
+      items: [["sys.password", "비밀번호 변경"], ["sys.connector", "가격 소스 연동"],
         ["sys.company", "회사정보"], ["base.warehouse", "사업장"], ["sys.audit", "변경 이력"]],
-      adminOnly: ["sys.user", "sys.connector", "sys.company", "base.warehouse"],
+      adminOnly: ["sys.connector", "sys.company", "base.warehouse"],
     }],
   },
 ];
@@ -4612,6 +4800,7 @@ export const SCREENS = {
   "base.project": { title: "공사등록", build: baseProject },
   "pur.search": { title: "자재 통합검색", build: purSearch },
   "base.import": { title: "공급처 품목 등록", build: baseImport },
+  "hr.leave": { title: "휴가 관리", build: leaveScreen },
   "base.review": { title: "규격 검수", build: reviewScreen },
   "base.partners": { title: "거래처 일괄 등록", build: partnerImport },
   "base.catalog": { title: "품목 마스터", build: baseCatalog },

@@ -488,6 +488,8 @@ ensureColumn("purchase_requests", "preferred_supplier_id", "TEXT");
 ensureColumn("purchase_requests", "supplier_product_id", "TEXT");
 ensureColumn("purchase_requests", "quoted_unit_price", "REAL");
 ensureColumn("catalog_products", "certification", "TEXT");
+// 연차 한도. 직원마다 다를 수 있어 사용자에 둡니다(기본 15일).
+ensureColumn("users", "annual_leave", "INTEGER NOT NULL DEFAULT 15");
 ensureColumn("catalog_products", "brand", "TEXT");
 ensureColumn("catalog_products", "subcategory", "TEXT");
 ensureColumn("catalog_products", "series", "TEXT");

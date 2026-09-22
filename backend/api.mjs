@@ -6,7 +6,7 @@ import {
 import {
   bidStatus, listBidNotices, bidCalendar, syncBidNotices, toggleStar, saveMemo, BID_KINDS,
 } from "./g2b.mjs";
-import { searchProducts, productDetail, offersFor, priceTrend, priceAlerts, compareProducts } from "./search.mjs";
+import { searchProducts, productDetail, offersFor, priceTrend, priceAlerts, compareProducts, specFacets } from "./search.mjs";
 import {
   listOrders, linesOf, orderWithLines, recalcOrder, createOrder, bundleRequests,
   approveOrder, cancelOrder, receiveOrder, orderSheet,
@@ -16,6 +16,8 @@ import {
   removeItem, removeCart, compareCart, requestFromQuote,
 } from "./quotes.mjs";
 import { importPartners, reviewQueue, resolveProduct, retireProduct } from "./partners.mjs";
+import { fillStandardCatalog, standardCatalogSummary } from "./standard-catalog.mjs";
+import { leaveSummary, setQuota } from "./hr.mjs";
 import { ingestSupplierCatalog, rowsFromCsv } from "./ingest.mjs";
 import { CATEGORIES, CATEGORY_TREE } from "./catalog.mjs";
 import { shopStatus, probe as g2bProbe, syncShoppingMall, SHOP_OPERATIONS } from "./g2b-shop.mjs";
@@ -1119,6 +1121,16 @@ export async function handleApi(request, response, url) {
     return json(response, 200, receipt(seg(url, 3)));
   }
 
+  /* ---- 인사 (휴가·연차) ---- */
+
+  if (method === "GET" && path === "/api/hr/leaves") {
+    return json(response, 200, leaveSummary(url.searchParams.get("year") || undefined));
+  }
+  if (method === "PUT" && /^\/api\/hr\/quota\/[^/]+$/.test(path)) {
+    requireRole(user, "system");          // 연차 한도는 사장만 정합니다
+    return json(response, 200, setQuota(seg(url, 4), body.days, user.name));
+  }
+
   /* ---- 팀 공유 일정 · 달력 ---- */
 
   if (method === "GET" && path === "/api/schedules") {
@@ -1160,6 +1172,24 @@ export async function handleApi(request, response, url) {
     const dryRun = path.endsWith("/preview");
     return json(response, dryRun ? 200 : 201, importPartners({
       kind, csv: String(body.csv || ""), filename: str(body.filename), user: user.name, dryRun,
+    }));
+  }
+
+  /* ---- 표준 규격으로 카탈로그 채우기 ---- */
+
+  // 분류별 규격 필터 값 (종류·굵기·심선수 …)
+  if (method === "GET" && /^\/api\/catalog\/facets\/[^/]+$/.test(path)) {
+    return json(response, 200, specFacets(seg(url, 4)));
+  }
+
+  if (method === "GET" && path === "/api/catalog/standard") {
+    return json(response, 200, standardCatalogSummary());
+  }
+  if (method === "POST" && path === "/api/catalog/standard/fill") {
+    requireRole(user, "master");
+    const categories = Array.isArray(body.categories) ? body.categories.map(String) : [];
+    return json(response, bool(body.dryRun) ? 200 : 201, fillStandardCatalog({
+      categories, user: user.name, dryRun: bool(body.dryRun),
     }));
   }
 
@@ -1267,7 +1297,10 @@ export async function handleApi(request, response, url) {
     for (const [key, value] of url.searchParams.entries()) {
       if (key.startsWith("spec.") && value) specFilters[key.slice(5)] = value;
     }
+    let specs = null;
+    try { specs = JSON.parse(url.searchParams.get("specs") || "null"); } catch { specs = null; }
     const result = searchProducts({
+      specs: specs && typeof specs === "object" ? specs : null,
       query: url.searchParams.get("q") || "",
       category: url.searchParams.get("category") || "",
       manufacturer: url.searchParams.get("manufacturer") || "",

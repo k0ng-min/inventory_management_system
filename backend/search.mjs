@@ -169,6 +169,37 @@ export function searchProducts({ query = "", category = "", manufacturer = "", s
   };
 }
 
+/**
+ * 규격 필터에 쓸 값 목록.
+ * "이 분류에 어떤 종류·굵기가 실제로 있는가" 를 세어 돌려줍니다. 없는 값을
+ * 고르게 두면 빈 결과만 나오므로, 화면은 여기 있는 것만 칩으로 보여 줍니다.
+ */
+export function specFacets(category) {
+  const definition = CATEGORIES[category];
+  if (!definition) return { category, label: null, fields: [] };
+
+  const rows = all("SELECT specs FROM catalog_products WHERE active = 1 AND category = ?", category)
+    .map((row) => { try { return JSON.parse(row.specs || "{}"); } catch { return {}; } });
+
+  const fields = definition.fields.map((field) => {
+    const counts = new Map();
+    for (const spec of rows) {
+      const value = spec?.[field.key];
+      if (value === undefined || value === null || value === "") continue;
+      counts.set(value, (counts.get(value) || 0) + 1);
+    }
+    const values = [...counts.entries()]
+      .map(([value, count]) => ({ value, count }))
+      .sort((a, b) => (typeof a.value === "number" && typeof b.value === "number"
+        ? a.value - b.value
+        : String(a.value).localeCompare(String(b.value), "ko")));
+    return { key: field.key, label: field.label, unit: field.unit || null, numeric: Boolean(field.numeric), values };
+  // 값이 하나뿐인 칸은 고를 이유가 없으니 내보내지 않습니다.
+  }).filter((field) => field.values.length > 1);
+
+  return { category, label: definition.label, fields, total: rows.length };
+}
+
 /** 제품 상세 — 업체별 가격 + 최근 구매가 + 가격추이 + 창고별 재고 */
 export function productDetail(productId) {
   const product = get("SELECT * FROM catalog_products WHERE id = ?", productId);
