@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="전기자재 구매·가격비교·재고관리와 나라장터 입찰공고를 한 흐름으로 관리하는 재고관리시스템" />
+    <meta name="theme-color" content="#f6f8fb" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <!-- Pretendard 하나로 한글·영문·숫자를 통일합니다. 오프라인이면 시스템 폰트로 대체됩니다. -->
+    <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin />
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css" />
+    <link rel="stylesheet" href="/styles.css" />
+    <title>재고관리시스템</title>
+  </head>
+  <body>
+    <!-- 로그인 / 초기 관리자 설정 -->
+    <main class="auth" id="authScreen">
+      <section class="auth-brand">
+        <div class="auth-logo"><span class="auth-mark">i</span><b>재고관리시스템</b></div>
+        <div>
+          <p class="kicker">Electrical Contractor Platform</p>
+          <h1>자재 구매부터<br />현장 재고, <em>입찰</em>까지<br />하나의 흐름으로.</h1>
+          <p>규격 기준 자재 검색·가격비교, 발주에서 입고·재고까지 자동 연결,
+             공사별 원가 집계, 그리고 나라장터 입찰공고를 날짜별로 확인합니다.</p>
+        </div>
+        <div class="auth-feats">
+          <span>재고 트랜잭션 원장</span><span>역할 기반 권한</span><span>나라장터 연동</span><span>공사별 원가</span>
+        </div>
+      </section>
+
+      <section class="auth-panel">
+        <form class="auth-form" id="loginForm">
+          <h2>로그인</h2>
+          <p>등록된 회사 계정으로 업무공간에 접속합니다.</p>
+          <label><span>이메일</span><input id="loginEmail" type="email" autocomplete="username" required /></label>
+          <label><span>비밀번호</span><input id="loginPassword" type="password" autocomplete="current-password" required /></label>
+          <button type="submit">로그인</button>
+          <div class="auth-error" id="loginError"></div>
+        </form>
+
+        <form class="auth-form hidden" id="setupForm">
+          <h2>초기 관리자 설정</h2>
+          <p>첫 관리자 계정을 만들면 운영 설정이 시작됩니다.</p>
+          <label><span>회사명</span><input id="setupOrganization" required /></label>
+          <div class="auth-grid">
+            <label><span>관리자 이름</span><input id="setupName" required /></label>
+            <label><span>이메일</span><input id="setupEmail" type="email" required /></label>
+          </div>
+          <label>
+            <span>비밀번호</span>
+            <input id="setupPassword" type="password" minlength="10" autocomplete="new-password" required />
+            <small>10자 이상으로 설정하세요.</small>
+          </label>
+          <button type="submit">관리자 계정 만들기</button>
+          <div class="auth-error" id="setupError"></div>
+        </form>
+      </section>
+    </main>
+
+    <!-- 업무 화면 -->
+    <div class="app hidden" id="app">
+      <header class="gnb">
+        <div class="gnb-brand">
+          <span class="auth-mark">i</span><b>재고관리시스템</b><em id="orgName">ERP</em>
+        </div>
+        <nav class="gnb-modules" id="moduleBar" aria-label="업무 모듈"></nav>
+        <div class="gnb-right">
+          <button class="gnb-btn" id="lnbToggle" title="메뉴 열기" aria-label="메뉴 열기">☰</button>
+          <button class="gnb-btn" id="refreshAll" title="전체 새로고침">↻</button>
+          <div class="gnb-user">
+            <span class="avatar" id="userAvatar">?</span>
+            <span><b id="userName">-</b><span class="role" id="userRole">-</span></span>
+          </div>
+          <button class="gnb-btn" id="logoutBtn">로그아웃</button>
+        </div>
+      </header>
+
+      <div class="shell">
+        <aside class="lnb" id="lnb">
+          <div class="lnb-head" id="lnbHead">메뉴</div>
+          <div id="lnbBody"></div>
+        </aside>
+
+        <section class="work">
+          <div class="tabstrip" id="tabstrip"></div>
+          <div class="tabhost" id="tabhost"></div>
+        </section>
+      </div>
+    </div>
+
+    <dialog class="modal" id="modal"></dialog>
+    <div class="toasts" id="toasts"></div>
+
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

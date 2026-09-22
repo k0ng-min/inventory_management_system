@@ -1,0 +1,484 @@
+{
+  "organization": {
+    "name": "INPACK",
+    "businessNumber": "",
+    "dataMode": "integration"
+  },
+  "users": [],
+  "connectors": [
+    {
+      "id": "g2b-items",
+      "name": "나라장터 쇼핑몰 품목정보",
+      "type": "g2b",
+      "purpose": "계약상품·인증·공급업체 기준정보",
+      "baseUrl": "https://apis.data.go.kr/1230000/ao/ShoppingMallPrdctInfoService",
+      "secretEnv": "G2B_SERVICE_KEY",
+      "enabled": false,
+      "status": "설정 필요",
+      "lastSyncAt": null
+    },
+    {
+      "id": "g2b-prices",
+      "name": "나라장터 가격정보",
+      "type": "g2b",
+      "purpose": "전기·정보통신 시설자재 기준가격",
+      "baseUrl": "https://apis.data.go.kr/1230000/ao/PriceInfoService",
+      "secretEnv": "G2B_SERVICE_KEY",
+      "enabled": false,
+      "status": "설정 필요",
+      "lastSyncAt": null
+    },
+    {
+      "id": "supplier-rest",
+      "name": "계약 공급처 REST API",
+      "type": "rest",
+      "purpose": "실거래가·가용재고·납기",
+      "baseUrl": "",
+      "secretEnv": "SUPPLIER_API_TOKEN",
+      "enabled": false,
+      "status": "공급처 협의 필요",
+      "lastSyncAt": null
+    },
+    {
+      "id": "supplier-csv",
+      "name": "공급처 CSV/SFTP",
+      "type": "file",
+      "purpose": "API가 없는 거래처의 가격표·재고표",
+      "baseUrl": "",
+      "secretEnv": "SUPPLIER_SFTP_PASSWORD",
+      "enabled": false,
+      "status": "매핑 필요",
+      "lastSyncAt": null
+    },
+    {
+      "id": "manufacturer-catalog",
+      "name": "제조사 규격 카탈로그",
+      "type": "catalog",
+      "purpose": "LS·대한·가온 등 제조사 규격 정규화",
+      "baseUrl": "",
+      "secretEnv": "",
+      "enabled": false,
+      "status": "카탈로그 등록 필요",
+      "lastSyncAt": null
+    }
+  ],
+  "projects": [
+    {
+      "id": "PRJ-2409-01",
+      "name": "세종 스마트산단 전기공사",
+      "site": "세종특별자치시 집현동",
+      "manager": "김현우",
+      "status": "진행 중"
+    },
+    {
+      "id": "PRJ-2408-03",
+      "name": "동탄 물류센터 증축",
+      "site": "경기도 화성시 동탄",
+      "manager": "박지민",
+      "status": "진행 중"
+    },
+    {
+      "id": "PRJ-2407-02",
+      "name": "판교 오피스 리뉴얼",
+      "site": "경기도 성남시 분당구",
+      "manager": "이준호",
+      "status": "마감 예정"
+    }
+  ],
+  "products": [
+    {
+      "id": "MAT-CV25-4C-A",
+      "name": "CV 25SQ 4C 0.6/1kV",
+      "manufacturer": "대한전선",
+      "supplier": "전기자재24",
+      "price": 128000,
+      "unit": "100m",
+      "unitPrice": 1280,
+      "stock": 18,
+      "leadTime": "내일 도착",
+      "updatedAt": "2026-09-21 09:42",
+      "match": 100,
+      "shipping": 0,
+      "tags": [
+        "CV",
+        "25SQ",
+        "4C",
+        "0.6/1kV"
+      ]
+    },
+    {
+      "id": "MAT-CV25-4C-B",
+      "name": "CV 전력케이블 25SQ × 4C",
+      "manufacturer": "LS전선",
+      "supplier": "케이블마트",
+      "price": 131500,
+      "unit": "100m",
+      "unitPrice": 1315,
+      "stock": 42,
+      "leadTime": "오늘 출고",
+      "updatedAt": "2026-09-21 09:18",
+      "match": 100,
+      "shipping": 0,
+      "tags": [
+        "CV",
+        "25SQ",
+        "4C",
+        "0.6/1kV"
+      ]
+    },
+    {
+      "id": "MAT-CV25-4C-C",
+      "name": "0.6/1kV CV 4C × 25㎟",
+      "manufacturer": "가온전선",
+      "supplier": "대한전기유통",
+      "price": 126000,
+      "unit": "100m",
+      "unitPrice": 1260,
+      "stock": 7,
+      "leadTime": "3일 이내",
+      "updatedAt": "2026-09-21 08:55",
+      "match": 100,
+      "shipping": 6000,
+      "tags": [
+        "CV",
+        "25SQ",
+        "4C",
+        "0.6/1kV"
+      ]
+    },
+    {
+      "id": "MAT-TFRCV25-4C",
+      "name": "TFR-CV 25SQ 4C 난연 케이블",
+      "manufacturer": "극동전선",
+      "supplier": "한빛전기",
+      "price": 146000,
+      "unit": "100m",
+      "unitPrice": 1460,
+      "stock": 13,
+      "leadTime": "2일 이내",
+      "updatedAt": "2026-09-20 17:40",
+      "match": 82,
+      "shipping": 0,
+      "tags": [
+        "TFR-CV",
+        "25SQ",
+        "4C",
+        "0.6/1kV"
+      ]
+    }
+  ],
+  "purchases": [
+    {
+      "id": "PUR-202609-0017",
+      "projectId": "PRJ-2409-01",
+      "productId": "MAT-CV25-4C-A",
+      "quantity": 3,
+      "purpose": "주배전반 인입 케이블",
+      "requestedDate": "2026-09-24",
+      "status": "구매요청",
+      "createdAt": "2026-09-20T01:10:00.000Z"
+    },
+    {
+      "id": "PUR-202609-0018",
+      "projectId": "PRJ-2409-01",
+      "productId": "MAT-CV25-4C-B",
+      "quantity": 2,
+      "purpose": "동력반 간선 증설",
+      "requestedDate": "2026-09-25",
+      "status": "발주완료",
+      "createdAt": "2026-09-20T03:32:00.000Z"
+    },
+    {
+      "id": "PUR-202609-0019",
+      "projectId": "PRJ-2408-03",
+      "productId": "MAT-CV25-4C-C",
+      "quantity": 1,
+      "purpose": "자동화 설비 전원 공사",
+      "requestedDate": "2026-09-27",
+      "status": "입고완료",
+      "createdAt": "2026-09-19T06:05:00.000Z"
+    }
+  ],
+  "inventory": [
+    {
+      "id": "INV-001",
+      "productId": "MAT-CV25-4C-A",
+      "warehouse": "본사 자재창고",
+      "bin": "A-01-03",
+      "onHand": 18,
+      "reserved": 6,
+      "expected": 20,
+      "allocated": 2,
+      "safetyStock": 10,
+      "lastMovement": "2026-09-20"
+    },
+    {
+      "id": "INV-002",
+      "productId": "MAT-CV25-4C-B",
+      "warehouse": "세종 현장창고",
+      "bin": "CABLE-02",
+      "onHand": 42,
+      "reserved": 18,
+      "expected": 0,
+      "allocated": 8,
+      "safetyStock": 12,
+      "lastMovement": "2026-09-21"
+    },
+    {
+      "id": "INV-003",
+      "productId": "MAT-CV25-4C-C",
+      "warehouse": "동탄 현장창고",
+      "bin": "B-04-01",
+      "onHand": 7,
+      "reserved": 5,
+      "expected": 10,
+      "allocated": 1,
+      "safetyStock": 8,
+      "lastMovement": "2026-09-19"
+    },
+    {
+      "id": "INV-004",
+      "productId": "MAT-TFRCV25-4C",
+      "warehouse": "본사 자재창고",
+      "bin": "A-01-06",
+      "onHand": 13,
+      "reserved": 4,
+      "expected": 12,
+      "allocated": 0,
+      "safetyStock": 8,
+      "lastMovement": "2026-09-18"
+    }
+  ],
+  "purchaseOrders": [
+    {
+      "id": "PO-202609-0041",
+      "supplierId": "SUP-001",
+      "projectId": "PRJ-2409-01",
+      "productId": "MAT-CV25-4C-A",
+      "quantity": 10,
+      "received": 0,
+      "amount": 1280000,
+      "dueDate": "2026-09-23",
+      "status": "발주완료",
+      "approver": "정미라"
+    },
+    {
+      "id": "PO-202609-0040",
+      "supplierId": "SUP-002",
+      "projectId": "PRJ-2408-03",
+      "productId": "MAT-CV25-4C-B",
+      "quantity": 8,
+      "received": 3,
+      "amount": 1052000,
+      "dueDate": "2026-09-22",
+      "status": "부분입고",
+      "approver": "정미라"
+    },
+    {
+      "id": "PO-202609-0039",
+      "supplierId": "SUP-003",
+      "projectId": "PRJ-2407-02",
+      "productId": "MAT-CV25-4C-C",
+      "quantity": 5,
+      "received": 5,
+      "amount": 630000,
+      "dueDate": "2026-09-20",
+      "status": "입고완료",
+      "approver": "김현우"
+    },
+    {
+      "id": "PO-202609-0038",
+      "supplierId": "SUP-004",
+      "projectId": "PRJ-2409-01",
+      "productId": "MAT-TFRCV25-4C",
+      "quantity": 12,
+      "received": 0,
+      "amount": 1752000,
+      "dueDate": "2026-09-26",
+      "status": "승인대기",
+      "approver": "정미라"
+    }
+  ],
+  "suppliers": [
+    {
+      "id": "SUP-001",
+      "name": "전기자재24",
+      "contact": "이성훈",
+      "phone": "02-2100-2410",
+      "terms": "월말 정산",
+      "leadTime": "1일",
+      "rating": 4.8,
+      "openPayable": 3420000,
+      "status": "정상"
+    },
+    {
+      "id": "SUP-002",
+      "name": "케이블마트",
+      "contact": "오민재",
+      "phone": "031-8015-7780",
+      "terms": "30일",
+      "leadTime": "당일",
+      "rating": 4.6,
+      "openPayable": 1052000,
+      "status": "정상"
+    },
+    {
+      "id": "SUP-003",
+      "name": "대한전기유통",
+      "contact": "최은지",
+      "phone": "02-6211-0855",
+      "terms": "선결제",
+      "leadTime": "3일",
+      "rating": 4.3,
+      "openPayable": 630000,
+      "status": "정상"
+    },
+    {
+      "id": "SUP-004",
+      "name": "한빛전기",
+      "contact": "박성호",
+      "phone": "042-710-3320",
+      "terms": "15일",
+      "leadTime": "2일",
+      "rating": 4.1,
+      "openPayable": 1752000,
+      "status": "검토"
+    }
+  ],
+  "salesOrders": [
+    {
+      "id": "SO-202609-0114",
+      "projectId": "PRJ-2409-01",
+      "customer": "세종도시개발",
+      "description": "간선 전기공사 2차 기성",
+      "amount": 28600000,
+      "invoiceDate": "2026-09-18",
+      "dueDate": "2026-10-18",
+      "status": "세금계산서 발행"
+    },
+    {
+      "id": "SO-202609-0113",
+      "projectId": "PRJ-2408-03",
+      "customer": "동탄로지스",
+      "description": "물류센터 전력설비 증축",
+      "amount": 17400000,
+      "invoiceDate": "2026-09-15",
+      "dueDate": "2026-10-15",
+      "status": "승인완료"
+    },
+    {
+      "id": "SO-202609-0112",
+      "projectId": "PRJ-2407-02",
+      "customer": "판교웍스",
+      "description": "오피스 전기설비 리뉴얼",
+      "amount": 9800000,
+      "invoiceDate": "2026-09-10",
+      "dueDate": "2026-10-10",
+      "status": "수금완료"
+    }
+  ],
+  "accountingEntries": [
+    {
+      "id": "JV-202609-0831",
+      "date": "2026-09-21",
+      "type": "매입",
+      "account": "공사재료비",
+      "counterparty": "전기자재24",
+      "description": "세종 현장 케이블 구매",
+      "debit": 1280000,
+      "credit": 0,
+      "projectId": "PRJ-2409-01",
+      "status": "승인"
+    },
+    {
+      "id": "JV-202609-0830",
+      "date": "2026-09-20",
+      "type": "매입",
+      "account": "공사재료비",
+      "counterparty": "케이블마트",
+      "description": "동탄 현장 케이블 구매",
+      "debit": 1052000,
+      "credit": 0,
+      "projectId": "PRJ-2408-03",
+      "status": "승인"
+    },
+    {
+      "id": "JV-202609-0829",
+      "date": "2026-09-19",
+      "type": "매출",
+      "account": "공사매출",
+      "counterparty": "세종도시개발",
+      "description": "간선 전기공사 2차 기성",
+      "debit": 0,
+      "credit": 28600000,
+      "projectId": "PRJ-2409-01",
+      "status": "승인"
+    },
+    {
+      "id": "JV-202609-0828",
+      "date": "2026-09-18",
+      "type": "경비",
+      "account": "차량유지비",
+      "counterparty": "현대오일뱅크",
+      "description": "현장 차량 유류비",
+      "debit": 164000,
+      "credit": 0,
+      "projectId": "PRJ-2409-01",
+      "status": "검토"
+    },
+    {
+      "id": "JV-202609-0827",
+      "date": "2026-09-17",
+      "type": "수금",
+      "account": "보통예금",
+      "counterparty": "판교웍스",
+      "description": "공사대금 수금",
+      "debit": 9800000,
+      "credit": 0,
+      "projectId": "PRJ-2407-02",
+      "status": "승인"
+    }
+  ],
+  "auditLogs": [
+    {
+      "id": "AUD-901",
+      "at": "2026-09-21 10:18",
+      "user": "김현우",
+      "module": "구매",
+      "action": "구매요청 생성",
+      "detail": "PUR-202609-0019 / 동탄 물류센터 증축"
+    },
+    {
+      "id": "AUD-900",
+      "at": "2026-09-21 09:52",
+      "user": "박지민",
+      "module": "재고",
+      "action": "공사 재고 예약",
+      "detail": "CV 25SQ 4C / 5롤"
+    },
+    {
+      "id": "AUD-899",
+      "at": "2026-09-21 09:31",
+      "user": "이준호",
+      "module": "입고",
+      "action": "입고 검수 완료",
+      "detail": "PO-202609-0039 / 5롤"
+    },
+    {
+      "id": "AUD-898",
+      "at": "2026-09-21 08:44",
+      "user": "정미라",
+      "module": "승인",
+      "action": "발주 승인",
+      "detail": "PO-202609-0041 / ₩1,280,000"
+    },
+    {
+      "id": "AUD-897",
+      "at": "2026-09-20 17:20",
+      "user": "김현우",
+      "module": "회계",
+      "action": "매입전표 승인",
+      "detail": "JV-202609-0830"
+    }
+  ]
+}

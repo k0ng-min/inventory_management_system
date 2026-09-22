@@ -1,0 +1,22 @@
+# 인증키 — 절대 커밋하지 않습니다.
+.env
+.env.*
+!.env.example
+
+node_modules/
+backend/secrets.json
+
+# SQLite 본체와 저널. 실데이터라 공유하지 않습니다.
+backend/erp.db
+backend/erp.db-wal
+backend/erp.db-shm
+*.db
+*.db-wal
+*.db-shm
+
+# 작업 중 만들어지는 백업·로그
+*.bak
+*.log
+
+# 기획 검토용 원본(기획제안서 PDF·캡처 6.8MB). 산출물이지 소스가 아닙니다.
+.docx-review/

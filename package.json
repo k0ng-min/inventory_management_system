@@ -1,0 +1,18 @@
+{
+  "name": "inventory-erp",
+  "version": "0.3.0",
+  "private": true,
+  "type": "module",
+  "description": "전기공사 회사용 재고관리시스템 — 자재 구매·재고·공사·회계 통합 + 나라장터 입찰공고 연동",
+  "scripts": {
+    "start": "node --no-warnings backend/server.mjs",
+    "dev": "node --no-warnings --watch backend/server.mjs",
+    "reset": "node --no-warnings backend/reset.mjs",
+    "smoke": "node --no-warnings backend/smoke.mjs",
+    "migrate": "node --no-warnings backend/migrate-catalog.mjs",
+    "check": "node --check backend/env.mjs && node --check backend/server.mjs && node --check backend/api.mjs && node --check backend/db.mjs && node --check backend/catalog.mjs && node --check backend/search.mjs && node --check backend/ingest.mjs && node --check backend/g2b.mjs && node --check backend/g2b-shop.mjs && node --check backend/supplier-rest.mjs && node --check backend/smoke.mjs && node --check frontend/app.js && node --check frontend/core.js && node --check frontend/controls.js && node --check frontend/screens.js"
+  },
+  "engines": {
+    "node": ">=22.5.0"
+  }
+}
