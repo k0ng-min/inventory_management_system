@@ -24,3 +24,6 @@ backend/erp.db-shm
 # 화면 캡처·데이터 백업은 저장소에 올리지 않습니다.
 image.png
 *-backup.json
+
+# 수집기가 만든 가격 CSV — 올리고 나면 지워도 됩니다.
+backend/collected-prices.csv

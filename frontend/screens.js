@@ -2061,6 +2061,18 @@ function catalogSearch() {
             h("span", {}, "최단 납기"),
             h("b", { text: product.best_lead === null ? "-" : product.best_lead === 0 ? "당일" : `${product.best_lead}일` })),
           (() => {
+            // 전선은 구리값이 바닥선입니다. 받은 단가가 그 몇 배인지 바로 보여 줍니다.
+            if (!product.copper_floor) return null;
+            const judge = product.copper_judge;
+            const tone = !judge ? "" : judge.ratio < 1 ? ".bh-up" : judge.ratio > 2.6 ? ".bh-up" : ".bh-down";
+            return h("div.fig", {},
+              h("span", {}, "구리 원가"),
+              h("b", { text: `${fmt.int(product.copper_floor)}원` }),
+              judge
+                ? h(`small.bh-tag${tone}`, { text: `${judge.ratio}배 · ${judge.verdict}` })
+                : h("small", { text: `/${product.base_unit}` }));
+          })(),
+          (() => {
             // 지난 구매가는 펼치지 않고도 보여야 합니다 — 반복 구매가 잦기 때문입니다.
             const delta = priceDelta(product.best_unit_price ?? null, product.last_buy_unit_price);
             return h("div.fig", {},

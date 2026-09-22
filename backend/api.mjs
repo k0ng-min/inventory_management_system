@@ -19,6 +19,7 @@ import { importPartners, reviewQueue, resolveProduct, retireProduct } from "./pa
 import { fillStandardCatalog, standardCatalogSummary } from "./standard-catalog.mjs";
 import { leaveSummary, setQuota } from "./hr.mjs";
 import { fillPrices, priceCoverage } from "./price-fill.mjs";
+import { syncCopperPrices, copperStatus, copperFloor, judgeCablePrice } from "./copper.mjs";
 import { ingestSupplierCatalog, rowsFromCsv } from "./ingest.mjs";
 import { CATEGORIES, CATEGORY_TREE } from "./catalog.mjs";
 import { shopStatus, probe as g2bProbe, syncShoppingMall, SHOP_OPERATIONS } from "./g2b-shop.mjs";
@@ -1183,6 +1184,16 @@ export async function handleApi(request, response, url) {
     return json(response, 200, specFacets(seg(url, 4)));
   }
 
+  /* ---- 전기동 고시가 — 전선값의 바닥선 ---- */
+
+  if (method === "GET" && path === "/api/catalog/copper") {
+    return json(response, 200, copperStatus());
+  }
+  if (method === "POST" && path === "/api/catalog/copper/sync") {
+    requireRole(user, "master");
+    return json(response, 200, await syncCopperPrices({ user: user.name }));
+  }
+
   // 가격 채우기 — 카탈로그 제품 이름으로 판매 사이트를 훑어 가격을 답니다.
   if (method === "GET" && path === "/api/catalog/prices") {
     return json(response, 200, priceCoverage());
@@ -1323,6 +1334,17 @@ export async function handleApi(request, response, url) {
       inStockOnly: url.searchParams.get("inStock") === "1",
       limit: Math.min(200, Number(url.searchParams.get("limit")) || 60),
     });
+    // 전선이면 구리 원가(바닥선)를 함께 답니다 — 받은 견적이 적정한지 바로 보입니다.
+    const copper = copperStatus();
+    if (copper.has) {
+      result.copper = { yearMonth: copper.yearMonth, pricePerKg: copper.pricePerKg, change: copper.change };
+      result.products = result.products.map((row) => {
+        const floor = copperFloor(row.category, row.specs, copper.pricePerKg);
+        if (floor === null) return row;
+        return { ...row, copper_floor: floor, copper_judge: judgeCablePrice(row.best_unit_price, floor) };
+      });
+    }
+
     // 단가를 볼 수 없는 역할에는 가격을 지우고 '업체 수'만 남깁니다.
     if (!canPrices(user)) {
       result.products = result.products.map((row) => stripMoney(row, ["best_unit_price"]));

@@ -376,6 +376,17 @@ CREATE TABLE IF NOT EXISTS supplier_products (
   UNIQUE (product_id, supplier_id)
 );
 
+-- 전기동 고시가. 전선값은 구리값이 정하므로, 견적이 적정한지 판단하는 기준입니다.
+-- 출처: 한국전선공업협동조합 월별 LME 고시가 (월 1회 갱신).
+CREATE TABLE IF NOT EXISTS copper_prices (
+  year_month TEXT PRIMARY KEY,      -- YYYY-MM
+  lme_usd REAL,
+  premium_usd REAL,
+  fx REAL,
+  price_per_ton INTEGER NOT NULL,
+  fetched_at TEXT NOT NULL
+);
+
 -- 가격 이력. "지난번에 얼마에 샀는가" 를 바로 답하기 위한 자산입니다.
 CREATE TABLE IF NOT EXISTS price_history (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
