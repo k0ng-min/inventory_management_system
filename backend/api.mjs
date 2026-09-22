@@ -6,7 +6,7 @@ import {
 import {
   bidStatus, listBidNotices, bidCalendar, syncBidNotices, toggleStar, saveMemo, BID_KINDS,
 } from "./g2b.mjs";
-import { searchProducts, productDetail, offersFor, priceTrend, priceAlerts } from "./search.mjs";
+import { searchProducts, productDetail, offersFor, priceTrend, priceAlerts, compareProducts } from "./search.mjs";
 import { ingestSupplierCatalog, rowsFromCsv } from "./ingest.mjs";
 import { CATEGORIES } from "./catalog.mjs";
 import { shopStatus, probe as g2bProbe, syncShoppingMall, SHOP_OPERATIONS } from "./g2b-shop.mjs";
@@ -1122,6 +1122,17 @@ export async function handleApi(request, response, url) {
     if (!canPrices(user)) {
       result.products = result.products.map((row) => stripMoney(row, ["best_unit_price"]));
     }
+    return json(response, 200, result);
+  }
+
+  // 제품 비교 — 고른 제품들을 나란히 놓습니다. 구체적인 라우트를 :id 보다 먼저 둡니다.
+  if (method === "GET" && path === "/api/catalog/compare") {
+    const ids = (url.searchParams.get("ids") || "").split(",").map((value) => value.trim()).filter(Boolean);
+    if (ids.length < 2) bad("비교하려면 제품을 2개 이상 선택해 주세요.");
+    if (ids.length > 6) bad("한 번에 6개까지 비교할 수 있습니다.");
+    const quantity = Math.max(1, int(url.searchParams.get("qty")) || 1);
+    const result = compareProducts([...new Set(ids)], quantity);
+    if (!result.items.length) notFound("비교할 제품을 찾을 수 없습니다.");
     return json(response, 200, result);
   }
 

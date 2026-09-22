@@ -1222,6 +1222,138 @@ function lastBuyBlock(product, lastPurchase, trend) {
       : null);
 }
 
+/* ---------- 제품 비교 -------------------------------------------------------
+   여러 제품을 나란히 놓고 고릅니다. 값이 갈리는 행만 눈에 띄게 하고,
+   규격 → 가격 → 납기 → 과거구매 → 품질 순서로 봅니다. 전기자재는
+   가격이 아무리 좋아도 규격이 어긋나면 살 수 없기 때문입니다. */
+
+const COMPARE_MAX = 6;
+
+/** 비교표 한 칸. 서버가 내려준 format 대로만 그립니다. */
+function compareCell(row, item, value, best) {
+  if (value === null || value === undefined || value === "") return h("span.muted", { text: "-" });
+  switch (row.format) {
+    case "won":
+      return h("span", {},
+        h(`b${row.strong && best.total ? ".pick" : ""}`, { text: fmt.won(Math.round(value)) }),
+        row.suffix === "/기본단위" ? h("small", { text: `/${item.base_unit}` }) : null);
+    case "int":
+      return h("span", {}, h("b", { text: fmt.int(value) }), row.suffix ? h("small", { text: row.suffix }) : null);
+    case "lead":
+      return h("span", {}, h(`b${best.lead ? ".pick" : ""}`, {
+        text: value === 0 ? "당일" : `${fmt.int(value)}일`,
+      }));
+    case "bool":
+      return value
+        ? h("span.tag.best", {}, "구매한 적 있음")
+        : h("span.muted", { text: "처음 구매" });
+    case "date": return h("span", { text: fmt.date(value) });
+    case "category": return h("span", { text: CATEGORY_LABELS[value] || value });
+    case "basis": return h("span.tag", { text: priceBasisLabel(value) });
+    case "rating": return h("span", { text: `${value}` });
+    case "delta": {
+      const delta = priceDelta(item.unit_price, item.last_buy_unit_price);
+      return delta ? h(`span.bh-tag.bh-${delta.tone}`, { text: delta.text }) : h("span.muted", { text: "-" });
+    }
+    case "spec":
+      return h("b", { text: `${value}${row.unit || ""}` });
+    default:
+      return h("span", { text: String(value) });
+  }
+}
+
+/**
+ * 비교 서랍.
+ * ids 는 검색 화면에서 체크한 제품들. 수량을 바꾸면 총 구매금액이 다시 계산됩니다.
+ */
+function compareDrawer(ids, onRequest) {
+  const state = { qty: 1, data: null, busy: false };
+  const body = h("div.cmp-host", { text: "불러오는 중…" });
+
+  const qtyInput = h("input.cmp-qty", { type: "number", min: "1", value: "1" });
+  qtyInput.addEventListener("change", () => {
+    const next = Math.max(1, Number(qtyInput.value) || 1);
+    state.qty = next;
+    qtyInput.value = String(next);
+    load();
+  });
+
+  async function load() {
+    if (state.busy) return;
+    state.busy = true;
+    try {
+      state.data = await api(`/api/catalog/compare?${new URLSearchParams({ ids: ids.join(","), qty: state.qty })}`);
+      draw();
+    } catch (error) {
+      body.replaceChildren(h("div.offer-blocked", { text: error.message }));
+    } finally {
+      state.busy = false;
+    }
+  }
+
+  function draw() {
+    const { items, groups, cheapestTotal, fastestLead, mixedCategory } = state.data;
+
+    const head = h("tr", {},
+      h("th.cmp-corner", {}, h("span", { text: "비교 항목" })),
+      ...items.map((item) => h("th", {},
+        h("div.cmp-name", {},
+          h("b", { text: item.name }),
+          item.confidence < 1 ? h("span.tag.warn", {}, "규격 확인 필요") : null),
+        h("div.cmp-sub", {},
+          h("span", { text: CATEGORY_LABELS[item.category] || item.category }),
+          item.manufacturer ? h("span", { text: item.manufacturer }) : null,
+          h("span", { text: `공급처 ${item.supplier_count}곳` })),
+        h("div.cmp-badges", {},
+          item.total !== null && item.total === cheapestTotal ? h("span.tag.best", {}, "최저 총액") : null,
+          item.lead_days !== null && item.lead_days === fastestLead ? h("span.tag", {}, "최단 납기") : null),
+        ref.can("purchasing") && item.best_offer_id
+          ? h("button.btn.sm.primary", {
+            onclick: () => {
+              closeModal();
+              onRequest(item);
+            },
+          }, "구매요청")
+          : null)));
+
+    const rows = [];
+    for (const group of groups) {
+      rows.push(h("tr.cmp-group", {},
+        h("th", { colSpan: items.length + 1 }, h("b", { text: group.label }),
+          group.note ? h("span.muted", { text: group.note }) : null)));
+      for (const row of group.rows) {
+        rows.push(h(`tr${row.differs ? ".diff" : ""}`, {},
+          h("th", {}, row.label, row.differs ? h("i.diff-dot", { title: "제품마다 값이 다릅니다" }) : null),
+          ...items.map((item, index) => h("td", {},
+            compareCell(row, item, row.values[index], {
+              total: row.key === "total" && item.total !== null && item.total === cheapestTotal,
+              lead: row.key === "lead_days" && item.lead_days !== null && item.lead_days === fastestLead,
+            })))));
+      }
+    }
+
+    // replaceChildren 는 h() 와 달리 null 을 걸러 주지 않아 "null" 이 그대로 찍힙니다.
+    body.replaceChildren(...[
+      mixedCategory
+        ? h("div.cmp-warn", { text: "종류가 서로 다른 제품을 비교하고 있습니다. 규격 항목은 공통된 것만 보여 줍니다." })
+        : null,
+      h("div.cmp-scroll", {}, h("table.cmp", {}, h("thead", {}, head), h("tbody", {}, ...rows))),
+    ].filter(Boolean));
+  }
+
+  openPanel({
+    title: `제품 비교 ${ids.length}건`,
+    sub: "규격이 맞는지 먼저 보고, 그 다음 가격과 납기를 봅니다",
+    width: "xwide",
+    content: h("div", {},
+      h("div.cmp-bar", {},
+        h("label", {}, h("span", { text: "구매 예정 수량" }), qtyInput),
+        h("span.muted", { text: "기본단위 기준 · 판매단위 묶음과 최소수량을 반영해 총액을 냅니다" })),
+      body),
+  });
+  load();
+}
+
 /** 규격을 칩으로 보여 줍니다. 검색어가 어떻게 해석됐는지 드러내기 위한 것입니다. */
 const specChips = (categories, category, specs) => {
   const definition = categories?.[category];
@@ -1235,7 +1367,7 @@ const specChips = (categories, category, specs) => {
 };
 
 function catalogSearch() {
-  const state = { q: "", sort: "match", category: "", inStock: false, open: new Set(), categories: null };
+  const state = { q: "", sort: "match", category: "", inStock: false, open: new Set(), picked: new Map(), categories: null };
   let result = { products: [], total: 0, parsed: {} };
 
   const searchInput = h("input", {
@@ -1316,6 +1448,34 @@ function catalogSearch() {
     }
   }
 
+  const pickBar = h("div.pick-bar");
+
+  /** 고른 제품이 있을 때만 뜨는 막대. 비교로 넘어가는 유일한 길입니다. */
+  function drawPickBar() {
+    const picked = [...state.picked.values()];
+    pickBar.classList.toggle("on", picked.length > 0);
+    if (!picked.length) return pickBar.replaceChildren();
+    pickBar.replaceChildren(
+      h("div.pick-names", {},
+        h("b", { text: `${picked.length}개 선택` }),
+        h("span.muted", { text: picked.map((row) => row.name).join(" · ") })),
+      h("div.grow"),
+      h("button.btn.sm", {
+        onclick: () => { state.picked.clear(); draw(); },
+      }, "선택 해제"),
+      h("button.btn.sm.primary", {
+        disabled: picked.length < 2,
+        title: picked.length < 2 ? "2개 이상 골라 주세요" : "",
+        onclick: () => compareDrawer(picked.map((row) => row.id), (item) => requestDialog({
+          id: item.id, name: item.name, unit: item.sell_unit || item.base_unit,
+          price: item.price, supplier: item.best_supplier, supplierId: item.best_supplier_id,
+          supplierProductId: item.best_offer_id, manufacturer: item.manufacturer,
+          lead_time: item.lead_days === null ? "" : `${item.lead_days}일`,
+          stock: item.stock_on_hand, shipping: item.shipping || 0,
+        }, run)),
+      }, `${picked.length}개 비교하기`));
+  }
+
   function draw() {
     hint.replaceChildren(
       ...(result.parsed?.recognized
@@ -1334,6 +1494,7 @@ function catalogSearch() {
           ? h("div", { style: { marginTop: "16px" } },
             h("button.btn.primary", { onclick: () => openScreen("base.import") }, "공급처 품목 등록"))
           : null));
+      drawPickBar();
       return;
     }
 
@@ -1374,8 +1535,30 @@ function catalogSearch() {
             h(`b${product.available <= 0 ? ".dim" : ""}`, { text: fmt.int(product.on_hand) }),
             h("small", { text: product.base_unit }))),
         h("button.hit-toggle", { onclick: () => toggle(product, host), title: "업체별 단가 비교" }, "▾"));
-      return h("div.hit-wrap", {}, row, host);
+
+      // 비교 체크 — 여러 제품을 골라 나란히 놓기 위한 것입니다.
+      const box = Object.assign(h("input", { type: "checkbox", title: "비교에 담기" }), {
+        checked: state.picked.has(product.id),
+        onchange(event) {
+          if (event.target.checked) {
+            if (state.picked.size >= COMPARE_MAX) {
+              event.target.checked = false;
+              toast(`비교는 ${COMPARE_MAX}개까지 담을 수 있습니다.`, "err");
+              return;
+            }
+            state.picked.set(product.id, product);
+          } else {
+            state.picked.delete(product.id);
+          }
+          wrap.classList.toggle("on", event.target.checked);
+          drawPickBar();
+        },
+      });
+      row.prepend(h("label.hit-pick", {}, box));
+      const wrap = h(`div.hit-wrap${state.picked.has(product.id) ? ".on" : ""}`, {}, row, host);
+      return wrap;
     }));
+    drawPickBar();
   }
 
   const chip = (label, active, onclick) =>
@@ -1403,7 +1586,8 @@ function catalogSearch() {
           }),
           h("span", {}, "사내 재고 있는 것만")),
         countLine)),
-    body);
+    body,
+    pickBar);
 
   return {
     el,

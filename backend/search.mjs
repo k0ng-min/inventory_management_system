@@ -164,6 +164,208 @@ export function productDetail(productId) {
   };
 }
 
+/* ==========================================================================
+   제품 비교
+   여러 제품을 나란히 놓고 고릅니다. 전기자재는 가격보다 규격이 먼저라서,
+   비교 항목을 규격 → 가격 → 납기 → 제조사/품질 순서로 묶어 내려보냅니다.
+   화면은 이 순서를 그대로 그리기만 하면 됩니다.
+   ========================================================================== */
+
+const VAT_RATE = 0.1;
+
+/**
+ * 판매단위 표기. "ROLL" 처럼 수량이 안 보이는 단위에만 환산량을 괄호로 답니다.
+ * "100m (100m)" 같은 중복을 만들지 않기 위해서입니다.
+ */
+const sellUnitLabel = (offer, baseUnit) => {
+  const unit = String(offer.sell_unit || "").trim();
+  if (!(offer.unit_qty > 1)) return unit;
+  return /\d/.test(unit) ? unit : `${unit} (${offer.unit_qty}${baseUnit})`;
+};
+
+/** 값이 서로 다른 행을 표시하기 위한 비교 키. 숫자와 문자를 같은 방식으로 다룹니다. */
+const sameValue = (a, b) => {
+  if (a === null || a === undefined) return b === null || b === undefined;
+  if (typeof a === "number" && typeof b === "number") return Math.abs(a - b) < 1e-9;
+  return String(a) === String(b);
+};
+
+/**
+ * 제품별 비교 자료 한 벌.
+ * quantity — 총 구매금액을 계산할 수량(기본단위 기준). 업체마다 판매단위가
+ * 달라도 "이만큼 사려면 얼마인가"로 답이 맞춰집니다.
+ */
+function compareRow(productId, quantity) {
+  const product = get("SELECT * FROM catalog_products WHERE id = ?", productId);
+  if (!product) return null;
+
+  const offers = offersFor(productId);
+  const best = offers[0] || null;                       // offersFor 가 환산단가 오름차순
+  const fastest = offers.filter((row) => row.lead_days !== null)
+    .sort((a, b) => a.lead_days - b.lead_days)[0] || null;
+  const purchase = lastPurchase(productId);
+
+  const stock = get(`
+    SELECT COALESCE(SUM(b.on_hand), 0) AS on_hand,
+           COALESCE(SUM(b.on_hand - b.reserved - b.allocated), 0) AS available
+    FROM inventory_balances b JOIN products p ON p.id = b.product_id
+    WHERE p.catalog_product_id = ?`, productId);
+
+  // 판매단위가 ROLL(100m) 이면 3개를 사야 300m 입니다. MOQ 와 최소 구매 묶음을 함께 봅니다.
+  let packs = null;
+  let supply = null;
+  let shipping = null;
+  if (best && quantity > 0) {
+    const perPack = best.unit_qty > 0 ? best.unit_qty : 1;
+    packs = Math.max(best.moq || 1, Math.ceil(quantity / perPack));
+    supply = packs * best.price;
+    shipping = best.shipping || 0;
+  }
+  const vat = supply === null ? null : Math.round((supply + shipping) * VAT_RATE);
+  const total = supply === null ? null : supply + shipping + vat;
+
+  return {
+    id: product.id,
+    name: product.name,
+    category: product.category,
+    specs: JSON.parse(product.specs || "{}"),
+    spec_label: product.spec_label,
+    manufacturer: product.manufacturer,
+    certification: product.certification,
+    base_unit: product.base_unit,
+    confidence: product.confidence,
+    supplier_count: offers.length,
+    best_supplier: best?.supplier_name || null,
+    best_supplier_id: best?.supplier_id || null,
+    best_offer_id: best?.id || null,
+    sell_unit: best ? sellUnitLabel(best, product.base_unit) : null,
+    price: best?.price ?? null,
+    unit_price: best ? Math.round(best.unit_price * 100) / 100 : null,
+    price_basis: best?.price_basis || null,
+    product_url: best?.product_url || null,
+    packs,
+    supply,
+    shipping,
+    vat,
+    total,
+    lead_days: best?.lead_days ?? null,
+    best_lead: fastest?.lead_days ?? null,
+    best_lead_supplier: fastest?.supplier_name || null,
+    supplier_rating: best?.rating ?? null,
+    stock_on_hand: stock.on_hand,
+    stock_available: stock.available,
+    bought_before: Boolean(purchase),
+    last_buy_price: purchase?.price ?? null,
+    last_buy_unit_price: purchase ? Math.round(purchase.unit_price * 100) / 100 : null,
+    last_buy_at: purchase?.at || null,
+    last_buy_supplier: purchase?.supplier_name || null,
+  };
+}
+
+/**
+ * 비교표. rows 는 화면에 그릴 순서대로 내려가고, 각 행의 differs 가
+ * "제품끼리 값이 갈리는 항목"을 표시합니다. 다른 곳만 눈에 띄게 하려는 것입니다.
+ */
+export function compareProducts(ids, quantity = 1) {
+  const items = ids.map((id) => compareRow(id, quantity)).filter(Boolean);
+  if (!items.length) return { quantity, items: [], groups: [] };
+
+  // 종류가 섞이면 규격 필드가 서로 달라, 공통 필드만 비교합니다.
+  const categories = [...new Set(items.map((item) => item.category))];
+  const specFields = categories.length === 1
+    ? (CATEGORIES[categories[0]] || CATEGORIES.etc).fields
+    : [];
+
+  const groups = [
+    {
+      key: "spec",
+      label: "규격",
+      note: categories.length === 1
+        ? (CATEGORIES[categories[0]] || CATEGORIES.etc).label
+        : "종류가 서로 달라 공통 항목만 비교합니다",
+      rows: [
+        { key: "category", label: "품목 분류", format: "category" },
+        ...specFields.map((field) => ({
+          key: `spec.${field.key}`, label: field.label, unit: field.unit || null, format: "spec",
+        })),
+        { key: "certification", label: "인증", format: "text" },
+        { key: "manufacturer", label: "제조사", format: "text" },
+      ],
+    },
+    {
+      key: "price",
+      label: "가격",
+      note: `${quantity}${items[0].base_unit} 기준 · 부가세 10% 별도 표기`,
+      rows: [
+        { key: "best_supplier", label: "판매처", format: "text" },
+        { key: "price_basis", label: "가격구분", format: "basis" },
+        { key: "sell_unit", label: "판매단위", format: "text" },
+        { key: "price", label: "단가", format: "won" },
+        { key: "unit_price", label: `환산단가`, format: "won", suffix: "/기본단위" },
+        { key: "packs", label: "구매 수량", format: "int", suffix: "묶음" },
+        { key: "supply", label: "공급가액", format: "won" },
+        { key: "shipping", label: "배송비", format: "won" },
+        { key: "vat", label: "부가세", format: "won" },
+        { key: "total", label: "총 구매금액", format: "won", strong: true },
+      ],
+    },
+    {
+      key: "lead",
+      label: "납기 · 재고",
+      rows: [
+        { key: "lead_days", label: "납기", format: "lead" },
+        { key: "best_lead", label: "최단 납기(전 업체)", format: "lead" },
+        { key: "stock_available", label: "사내 가용재고", format: "int" },
+        { key: "supplier_count", label: "비교 가능 업체", format: "int", suffix: "곳" },
+      ],
+    },
+    {
+      key: "history",
+      label: "과거 구매",
+      rows: [
+        { key: "bought_before", label: "구매 이력", format: "bool" },
+        { key: "last_buy_unit_price", label: "마지막 구매단가", format: "won" },
+        { key: "last_buy_supplier", label: "마지막 구매처", format: "text" },
+        { key: "last_buy_at", label: "마지막 구매일", format: "date" },
+        { key: "delta", label: "가격변동", format: "delta" },
+      ],
+    },
+    {
+      key: "quality",
+      label: "품질",
+      rows: [{ key: "supplier_rating", label: "공급처 평점", format: "rating" }],
+    },
+  ];
+
+  const pick = (item, key) => (key.startsWith("spec.")
+    ? item.specs?.[key.slice(5)] ?? null
+    : key === "delta"
+      ? (item.last_buy_unit_price && item.unit_price !== null
+        ? Math.round((item.unit_price - item.last_buy_unit_price) * 100) / 100 : null)
+      : item[key] ?? null);
+
+  for (const group of groups) {
+    for (const row of group.rows) {
+      row.values = items.map((item) => pick(item, row.key));
+      row.differs = row.values.some((value) => !sameValue(value, row.values[0]));
+    }
+    // 값이 전부 비어 있는 행은 화면을 채우기만 하므로 내려보내지 않습니다.
+    group.rows = group.rows.filter((row) => row.values.some((value) => value !== null && value !== ""));
+  }
+
+  // 최저 총액·최단 납기를 짚어 줍니다. 규격이 맞는지 본 다음에 볼 것들입니다.
+  const totals = items.map((item) => item.total).filter((value) => value !== null);
+  const leads = items.map((item) => item.lead_days).filter((value) => value !== null);
+  return {
+    quantity,
+    items,
+    groups: groups.filter((group) => group.rows.length),
+    cheapestTotal: totals.length ? Math.min(...totals) : null,
+    fastestLead: leads.length ? Math.min(...leads) : null,
+    mixedCategory: categories.length > 1,
+  };
+}
+
 /**
  * 가격 급등 감지 — 같은 공급처의 직전 가격 대비 상승률.
  * 홈 화면의 "최근 가격 변동" 에 씁니다.

@@ -325,6 +325,7 @@ CREATE TABLE IF NOT EXISTS catalog_products (
   safety_stock INTEGER NOT NULL DEFAULT 0,
   barcode TEXT,
   note TEXT,
+  certification TEXT,
   confidence REAL NOT NULL DEFAULT 1,
   active INTEGER NOT NULL DEFAULT 1,
   created_at TEXT NOT NULL,
@@ -410,6 +411,7 @@ ensureColumn("purchase_requests", "supplier_product_id", "TEXT");
 ensureColumn("purchase_requests", "quoted_unit_price", "REAL");
 ensureColumn("purchase_orders", "supplier_product_id", "TEXT");
 ensureColumn("purchase_orders", "source_url", "TEXT");
+ensureColumn("catalog_products", "certification", "TEXT");
 ensureColumn("supplier_products", "price_basis", "TEXT NOT NULL DEFAULT 'quote'");
 ensureColumn("supplier_products", "product_url", "TEXT");
 db.exec("CREATE INDEX IF NOT EXISTS idx_products_catalog ON products(catalog_product_id)");

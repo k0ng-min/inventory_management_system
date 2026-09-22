@@ -356,6 +356,51 @@ async function main() {
   check("가격 급등 감지", alerts.status === 200 && alerts.body.some((row) => row.product_id === cv.id && row.change > 0),
     JSON.stringify(alerts.body));
 
+  console.log("\n제품 비교");
+  const hfix = (await as("GET", `/api/catalog/search?q=${encodeURIComponent("HFIX 2.5")}`)).body.products[0];
+  check("비교 대상 두 번째 제품 확보", Boolean(hfix) && hfix.id !== cv.id, JSON.stringify(hfix?.id));
+
+  check("한 개만 고르면 거부", (await as("GET", `/api/catalog/compare?ids=${cv.id}`)).status === 400);
+  check("일곱 개는 거부", (await as("GET", `/api/catalog/compare?ids=${["a","b","c","d","e","f","g"].join(",")}`)).status === 400);
+  check("없는 제품만 고르면 404", (await as("GET", "/api/catalog/compare?ids=NOPE-1,NOPE-2")).status === 404);
+
+  const cmp = await as("GET", `/api/catalog/compare?ids=${cv.id},${hfix.id}&qty=300`);
+  check("비교표 조회", cmp.status === 200 && cmp.body.items.length === 2, JSON.stringify(cmp.body.items?.length));
+  check("비교 수량 반영", cmp.body.quantity === 300, String(cmp.body.quantity));
+
+  const cmpCv = cmp.body.items.find((row) => row.id === cv.id);
+  // 300m 를 100m 묶음으로 사면 3묶음. 공급가 = 3 × 최저가 업체 단가.
+  check("판매단위 묶음 환산", cmpCv.packs === 3, String(cmpCv.packs));
+  check("공급가액 = 묶음 × 단가", cmpCv.supply === cmpCv.packs * cmpCv.price,
+    `${cmpCv.supply} / ${cmpCv.packs} × ${cmpCv.price}`);
+  check("부가세 10%", cmpCv.vat === Math.round((cmpCv.supply + cmpCv.shipping) * 0.1), String(cmpCv.vat));
+  check("총 구매금액 = 공급가 + 배송비 + 부가세",
+    cmpCv.total === cmpCv.supply + cmpCv.shipping + cmpCv.vat, String(cmpCv.total));
+  check("최저 총액 표시", cmp.body.cheapestTotal === Math.min(...cmp.body.items.map((row) => row.total)),
+    String(cmp.body.cheapestTotal));
+
+  const rowOf = (key) => cmp.body.groups.flatMap((group) => group.rows).find((row) => row.key === key);
+  check("규격이 가장 먼저", cmp.body.groups[0].key === "spec", cmp.body.groups.map((g) => g.key).join(">"));
+  check("판단 순서 — 규격→가격→납기", cmp.body.groups.slice(0, 3).map((g) => g.key).join(",") === "spec,price,lead",
+    cmp.body.groups.map((g) => g.key).join(","));
+  check("다른 값은 differs 로 표시", rowOf("spec.type")?.differs === true, JSON.stringify(rowOf("spec.type")));
+  check("같은 값은 differs 가 아님", rowOf("spec.area")?.differs === false, JSON.stringify(rowOf("spec.area")));
+  check("값이 전부 비면 행을 빼냄", !rowOf("certification"), JSON.stringify(rowOf("certification")));
+  check("과거 구매 이력 행", rowOf("bought_before")?.values.includes(true), JSON.stringify(rowOf("bought_before")?.values));
+
+  // 인증 표기는 제품명에 적힌 것만 읽습니다.
+  const certImport = await as("POST", "/api/catalog/import", {
+    supplierId: supplier.body.id, filename: "cert.csv",
+    csv: "품명,단위,단가\nMCCB 100A 4P KC 안전인증,EA,54000",
+  });
+  check("인증 표기 적재", certImport.status === 201, JSON.stringify(certImport.body.summary));
+  const mccb = (await as("GET", `/api/catalog/search?q=${encodeURIComponent("MCCB 100A 4P")}`)).body.products[0];
+  check("제품명에서 인증을 읽음", mccb?.certification === "KC", JSON.stringify(mccb?.certification));
+
+  check("종류가 섞이면 알려 줌",
+    (await as("GET", `/api/catalog/compare?ids=${cv.id},${mccb.id}`)).body.mixedCategory === true);
+  check("조회전용도 비교 가능", (await asViewer("GET", `/api/catalog/compare?ids=${cv.id},${hfix.id}`)).status === 200);
+
   check("품목 마스터 목록", (await as("GET", "/api/catalog/products")).body.length >= 2);
   const shop = await as("GET", "/api/catalog/g2b/status");
   check("쇼핑몰 연동 상태 조회", shop.status === 200 && Array.isArray(shop.body.operations));

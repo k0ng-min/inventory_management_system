@@ -248,6 +248,29 @@ export function parseSpec(rawName, hintCategory) {
 }
 
 /**
+ * 제품명에 적힌 인증 표기를 뽑습니다.
+ * 전기자재는 규격이 같아도 인증 유무가 현장 반입 가부를 가르므로 비교 항목입니다.
+ * 이름에 없는 인증을 만들어 내지는 않습니다 — 적힌 것만 읽습니다.
+ */
+const CERT_MARKS = [
+  [/\bKS\s?C\b|\bKS\b/, "KS"],
+  [/\bKC\b|전기용품안전|안전인증/, "KC"],
+  [/\bUL\b/, "UL"],
+  [/\bCE\b/, "CE"],
+  [/\bTUV\b/, "TUV"],
+  [/\bIEC\b/, "IEC"],
+  [/\bROHS\b/, "RoHS"],
+  [/고효율|에너지절약/, "고효율"],
+];
+
+export function parseCerts(rawName) {
+  const text = normalizeText(rawName);
+  if (!text) return null;
+  const hits = CERT_MARKS.filter(([pattern]) => pattern.test(text)).map(([, label]) => label);
+  return hits.length ? [...new Set(hits)].join("·") : null;
+}
+
+/**
  * 동일제품 매칭 키. 같은 키를 가지면 같은 물건으로 봅니다.
  * 제조사는 키에 넣지 않습니다 — 규격이 같으면 비교 대상이기 때문입니다.
  */

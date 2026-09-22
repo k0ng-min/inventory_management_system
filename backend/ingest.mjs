@@ -9,7 +9,7 @@
    ========================================================================== */
 
 import { run, get, tx, nowIso, today, auditLog, newId } from "./db.mjs";
-import { parseSpec, specKey, specLabel, canonicalName, CATEGORIES } from "./catalog.mjs";
+import { parseSpec, specKey, specLabel, canonicalName, parseCerts, CATEGORIES } from "./catalog.mjs";
 
 /* ---------- 입력 정규화 ---------------------------------------------------- */
 
@@ -122,12 +122,16 @@ function attachProduct(input) {
   const key = specKey(parsed.category, parsed.specs);
   const definition = CATEGORIES[parsed.category] || CATEGORIES.etc;
 
+  const certs = parseCerts(input.name);
+
   const existing = get("SELECT * FROM catalog_products WHERE spec_key = ?", key);
   if (existing) {
-    // 제조사 정보가 비어 있었다면 채워 줍니다.
-    if (!existing.manufacturer && input.manufacturer) {
-      run("UPDATE catalog_products SET manufacturer = ?, updated_at = ? WHERE id = ?",
-        input.manufacturer, nowIso(), existing.id);
+    // 제조사·인증이 비어 있었다면 채워 줍니다. 업체마다 이름에 적는 정보가 달라서,
+    // 한 업체가 빠뜨린 것을 다른 업체 이름에서 얻는 일이 흔합니다.
+    if ((!existing.manufacturer && input.manufacturer) || (!existing.certification && certs)) {
+      run("UPDATE catalog_products SET manufacturer = ?, certification = ?, updated_at = ? WHERE id = ?",
+        existing.manufacturer || input.manufacturer || null,
+        existing.certification || certs || null, nowIso(), existing.id);
     }
     return { productId: existing.id, status: "matched", confidence: parsed.confidence, category: parsed.category };
   }
@@ -135,13 +139,13 @@ function attachProduct(input) {
   const id = `P-${key.replace(/[^A-Za-z0-9]+/g, "").slice(0, 18).toUpperCase()}-${Math.random().toString(36).slice(2, 6)}`;
   run(`INSERT INTO catalog_products
          (id, spec_key, category, name, specs, spec_label, manufacturer, base_unit,
-          safety_stock, barcode, note, confidence, active, created_at, updated_at)
-       VALUES (?,?,?,?,?,?,?,?,0,NULL,NULL,?,1,?,?)`,
+          safety_stock, barcode, note, certification, confidence, active, created_at, updated_at)
+       VALUES (?,?,?,?,?,?,?,?,0,NULL,NULL,?,?,1,?,?)`,
     id, key, parsed.category,
     canonicalName(parsed.category, parsed.specs, null) || input.name,
     JSON.stringify(parsed.specs), specLabel(parsed.category, parsed.specs),
     input.manufacturer || null, definition.baseUnit,
-    parsed.confidence, nowIso(), nowIso());
+    certs, parsed.confidence, nowIso(), nowIso());
 
   return { productId: id, status: "created", confidence: parsed.confidence, category: parsed.category };
 }
