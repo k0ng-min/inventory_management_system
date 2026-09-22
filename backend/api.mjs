@@ -8,6 +8,10 @@ import {
 } from "./g2b.mjs";
 import { searchProducts, productDetail, offersFor, priceTrend, priceAlerts, compareProducts } from "./search.mjs";
 import {
+  listOrders, linesOf, orderWithLines, recalcOrder, createOrder, bundleRequests,
+  approveOrder, cancelOrder, receiveOrder, orderSheet,
+} from "./orders.mjs";
+import {
   listCarts, getCart, cartItems, createCart, addItem, updateItem,
   removeItem, removeCart, compareCart, requestFromQuote,
 } from "./quotes.mjs";
@@ -93,9 +97,9 @@ const ROLE_WRITE = {
   purchasing: STAFF,   // 구매요청·발주
   warehouse: STAFF,    // 입고·재고이동·조정·배정·출고
   sales: STAFF,        // 매출·수금
-  accounting: STAFF,   // 전표
-  bids: STAFF,         // 입찰
-  system: ["admin"],   // 사용자·연동·회사정보 — 관리자 전용
+  accounting: ["admin"],   // 전표 — 회계 모듈은 관리자 전용
+  bids: ["admin"],         // 입찰 — 관리자 전용
+  system: ["admin"],       // 사용자·연동·회사정보 — 관리자 전용
   schedule: STAFF,     // 팀 일정
 };
 
@@ -109,6 +113,16 @@ const canFinance = () => true;
 const canPrices = () => true;
 
 const requireFinance = () => {};
+
+/**
+ * 회계·입찰·분석은 모듈 통째로 관리자 전용입니다.
+ * 금액을 직원에게 공개하는 것과는 별개입니다 — 단가·발주금액은 구매 업무에
+ * 필요하지만, 전표·입찰·경영분석은 사장이 보는 화면입니다.
+ * 화면에서 감추는 것과 별개로 여기서 막아, 주소창으로 직접 열어도 열리지 않습니다.
+ */
+const requireAdmin = (user, what) => {
+  if (user.role !== "admin") forbidden(`${what}은(는) 관리자만 볼 수 있습니다.`);
+};
 
 /** 객체(또는 배열)에서 지정한 금액 필드를 제거합니다. */
 function stripMoney(payload, fields) {
@@ -240,7 +254,8 @@ const resources = {
     },
     beforeDelete: blockIfReferenced("품목", [
       ["SELECT COUNT(*) n FROM inventory_balances WHERE product_id = ? AND on_hand <> 0", "재고가 남아 있습니다."],
-      ["SELECT COUNT(*) n FROM purchase_orders WHERE product_id = ? AND status <> '입고완료'", "진행 중인 발주가 있습니다."],
+      [`SELECT COUNT(*) n FROM purchase_order_lines l JOIN purchase_orders o ON o.id = l.order_id
+        WHERE l.product_id = ? AND o.status <> '입고완료' `, "진행 중인 발주가 있습니다."],
     ]),
     afterWrite: () => catalogFromLegacy(),
   }),
@@ -291,7 +306,7 @@ const resources = {
       budget: { column: "budget", cast: int }, progress: { column: "progress", cast: int }, note: { column: "note" },
     },
     beforeDelete: blockIfReferenced("공사", [
-      ["SELECT COUNT(*) n FROM purchase_orders WHERE project_id = ?", "연결된 발주가 있습니다."],
+      ["SELECT COUNT(*) n FROM purchase_order_lines WHERE project_id = ?", "연결된 발주가 있습니다."],
       ["SELECT COUNT(*) n FROM sales_orders WHERE project_id = ?", "연결된 매출이 있습니다."],
     ]),
   }),
@@ -329,14 +344,6 @@ const INVENTORY_SQL = `
 const inventoryRows = (where = "", ...params) =>
   all(`${INVENTORY_SQL} ${where} ORDER BY p.name, w.name`, ...params)
     .map((row) => ({ ...row, shortage: row.available < row.safety_stock }));
-
-const PO_SQL = `
-  SELECT o.*, s.name AS supplier_name, pr.name AS project_name, p.name AS product_name, p.unit,
-         (o.quantity - o.received) AS remaining
-  FROM purchase_orders o
-  LEFT JOIN suppliers s ON s.id = o.supplier_id
-  LEFT JOIN projects pr ON pr.id = o.project_id
-  LEFT JOIN products p ON p.id = o.product_id`;
 
 const REQUEST_SQL = `
   SELECT r.*, pr.name AS project_name, p.name AS product_name, p.unit,
@@ -381,7 +388,17 @@ function receipt(projectId) {
       return { ...row, supply, shipping: 0, total: supply };
     });
   const supplyTotal = items.reduce((sum, item) => sum + item.supply, 0);
-  const orders = all(`${PO_SQL} WHERE o.project_id = ? ORDER BY o.created_at DESC`, projectId);
+  // 공사는 발주 줄에 붙습니다 — 한 발주서에 여러 공사의 자재가 섞일 수 있습니다.
+  const orders = all(`
+    SELECT o.*, s.name AS supplier_name,
+           COALESCE(SUM(l.amount), 0) AS amount,
+           COALESCE(SUM(l.quantity), 0) AS quantity,
+           COALESCE(SUM(l.received), 0) AS received
+    FROM purchase_order_lines l
+    JOIN purchase_orders o ON o.id = l.order_id
+    LEFT JOIN suppliers s ON s.id = o.supplier_id
+    WHERE l.project_id = ?
+    GROUP BY o.id ORDER BY o.created_at DESC`, projectId);
   const issues = all(
     `SELECT t.*, p.name AS product_name, w.name AS warehouse_name
      FROM inventory_transactions t
@@ -454,7 +471,11 @@ function createRequest(body, user) {
   return get(`${REQUEST_SQL} WHERE r.id = ?`, id);
 }
 
-/** 구매요청 승인 → 발주서 자동 생성. 하나의 트랜잭션으로 처리합니다. */
+/**
+ * 구매요청 승인 → 발주서 자동 생성.
+ * 요청 한 건이면 줄 하나짜리 발주가 납니다. 여러 건을 한 장으로 묶으려면
+ * bundleRequests(= /api/purchase-orders/bundle) 를 씁니다.
+ */
 function approveRequest(id, body, user) {
   requireRole(user, "purchasing");
   return tx(() => {
@@ -468,34 +489,26 @@ function approveRequest(id, body, user) {
       || get("SELECT id FROM suppliers ORDER BY rating DESC LIMIT 1")?.id;
     if (!supplierId) bad("발주할 공급처가 없습니다. 기준정보에서 공급처를 먼저 등록해 주세요.");
 
-    const unitPrice = body.unitPrice !== undefined ? int(body.unitPrice) : (request.quoted_unit_price ?? product?.price ?? 0);
-    const amount = unitPrice * request.quantity;
-    const orderId = nextDocNo("purchase_orders", "PO");
-    const selectedOffer = request.supplier_product_id
-      ? get("SELECT * FROM supplier_products WHERE id = ?", request.supplier_product_id) : null;
-    run(`INSERT INTO purchase_orders
-         (id, request_id, supplier_product_id, source_url, supplier_id, project_id, product_id,
-          quantity, received, unit_price, amount, due_date, status, approver, created_at)
-         VALUES (?,?,?,?,?,?,?,?,0,?,?,?,'발주완료',?,?)`,
-      orderId, request.id, selectedOffer?.id || null, selectedOffer?.product_url || null,
-      supplierId, request.project_id, request.product_id,
-      request.quantity, unitPrice, amount,
-      str(body.dueDate) || request.requested_date, user.name, nowIso());
+    const order = bundleRequests({
+      requestIds: [id],
+      supplierId,
+      dueDate: str(body.dueDate) || request.requested_date,
+      warehouseId: str(body.warehouseId),
+      // 승인 화면에서 단가를 고쳤으면 그 값을 씁니다.
+      unitPrice: body.unitPrice,
+    }, user);
 
-    run("UPDATE purchase_requests SET status = '발주완료', approver = ?, approved_at = ? WHERE id = ?",
-      user.name, nowIso(), id);
-
-    // 입고예정 수량 반영
-    const warehouseId = str(body.warehouseId) || get("SELECT id FROM warehouses WHERE active = 1 ORDER BY id LIMIT 1")?.id;
-    if (warehouseId) {
-      run(`INSERT INTO inventory_balances (product_id, warehouse_id, expected, safety_stock)
-           VALUES (?,?,?,?)
-           ON CONFLICT(product_id, warehouse_id) DO UPDATE SET expected = expected + excluded.expected`,
-        request.product_id, warehouseId, request.quantity, product?.safety_stock || 0);
+    if (body.unitPrice !== undefined) {
+      const line = linesOf(order.id)[0];
+      const unitPrice = int(body.unitPrice);
+      run("UPDATE purchase_order_lines SET unit_price = ?, amount = ? WHERE id = ?",
+        unitPrice, unitPrice * line.quantity, line.id);
     }
 
-    auditLog(user.name, "구매", "구매요청 승인·발주", `${id} → ${orderId} / ₩${amount.toLocaleString("ko-KR")}`);
-    return { request: get(`${REQUEST_SQL} WHERE r.id = ?`, id), order: get(`${PO_SQL} WHERE o.id = ?`, orderId) };
+    return {
+      request: get(`${REQUEST_SQL} WHERE r.id = ?`, id),
+      order: withPrices(body.unitPrice !== undefined ? recalcOrder(order.id) : order, user),
+    };
   });
 }
 
@@ -510,43 +523,17 @@ function rejectRequest(id, body, user) {
   return get(`${REQUEST_SQL} WHERE r.id = ?`, id);
 }
 
-function createOrder(body, user) {
-  requireRole(user, "purchasing");
-  const product = get("SELECT * FROM products WHERE id = ?", str(body.productId));
-  const supplier = get("SELECT * FROM suppliers WHERE id = ?", str(body.supplierId));
-  const quantity = int(body.quantity);
-  if (!product) bad("품목을 선택해 주세요.");
-  if (!supplier) bad("공급처를 선택해 주세요.");
-  if (quantity < 1) bad("수량은 1 이상이어야 합니다.");
-  const unitPrice = body.unitPrice !== undefined ? int(body.unitPrice) : product.price;
-  const id = nextDocNo("purchase_orders", "PO");
-  run(`INSERT INTO purchase_orders
-       (id, supplier_id, project_id, product_id, quantity, received, unit_price, amount, due_date, status, approver, created_at)
-       VALUES (?,?,?,?,?,0,?,?,?,?,?,?)`,
-    id, supplier.id, str(body.projectId), product.id, quantity, unitPrice,
-    unitPrice * quantity, str(body.dueDate), str(body.status) || "승인대기", user.name, nowIso());
-  auditLog(user.name, "구매", "발주 등록", `${id} / ${supplier.name} / ${product.name} ${quantity}`);
-  return get(`${PO_SQL} WHERE o.id = ?`, id);
-}
+/* ---------- 발주 · 입고 -----------------------------------------------------
+   업무 규칙은 orders.mjs 에 있습니다. 여기서는 권한을 보고, 입고에 딸려 나오는
+   회계 처리(매입전표)와 가격이력 기록만 갈고리로 걸어 줍니다. */
 
-function approveOrder(id, user) {
-  requireRole(user, "purchasing");
-  const order = get("SELECT * FROM purchase_orders WHERE id = ?", id);
-  if (!order) notFound("발주서를 찾을 수 없습니다.");
-  if (order.status !== "승인대기") bad(`이미 ${order.status} 상태입니다.`);
-  run("UPDATE purchase_orders SET status = '발주완료', approver = ? WHERE id = ?", user.name, id);
-  auditLog(user.name, "승인", "발주 승인", `${id} / ₩${order.amount.toLocaleString("ko-KR")}`);
-  return get(`${PO_SQL} WHERE o.id = ?`, id);
-}
+const withPrices = (order, user) => (canPrices(user) ? order : maskOrder(order));
 
-function cancelOrder(id, user) {
-  requireRole(user, "purchasing");
-  const order = get("SELECT * FROM purchase_orders WHERE id = ?", id);
-  if (!order) notFound("발주서를 찾을 수 없습니다.");
-  if (order.received > 0) bad("이미 입고된 발주는 취소할 수 없습니다. 반품으로 처리해 주세요.");
-  run("UPDATE purchase_orders SET status = '취소' WHERE id = ?", id);
-  auditLog(user.name, "구매", "발주 취소", id);
-  return get(`${PO_SQL} WHERE o.id = ?`, id);
+/** 단가를 볼 수 없는 사람에게는 헤더와 줄에서 금액 키를 모두 지웁니다. */
+function maskOrder(order) {
+  const clean = stripMoney(order, ["amount"]);
+  clean.lines = (order.lines || []).map((line) => stripMoney(line, ["unit_price", "amount"]));
+  return clean;
 }
 
 /**
@@ -557,84 +544,76 @@ function cancelOrder(id, user) {
  * 사내 품목이 정규화 카탈로그에 연결돼 있어야 제품 단위로 비교됩니다.
  * 연결이 없으면(직접 등록한 품목) 조용히 건너뜁니다 — 입고 자체를 막을 일은 아닙니다.
  */
-function recordPurchasePrice(order, at, userName) {
-  const product = get("SELECT catalog_product_id FROM products WHERE id = ?", order.product_id);
+function recordPurchasePrice({ order, line, quantity, receivedAt, user }) {
+  const product = get("SELECT catalog_product_id FROM products WHERE id = ?", line.product_id);
   const catalogId = product?.catalog_product_id;
-  if (!catalogId || !order.unit_price) return;
+  if (!catalogId || !line.unit_price) return;
 
   // 발주가 어떤 판매조건에서 나왔으면 그 판매단위를, 아니면 기본단위 1개로 환산합니다.
-  const offer = order.supplier_product_id
-    ? get("SELECT sell_unit, unit_qty FROM supplier_products WHERE id = ?", order.supplier_product_id)
+  const offer = line.supplier_product_id
+    ? get("SELECT sell_unit, unit_qty FROM supplier_products WHERE id = ?", line.supplier_product_id)
     : null;
   const unitQty = offer?.unit_qty && offer.unit_qty > 0 ? offer.unit_qty : 1;
 
   run(`INSERT INTO price_history
          (product_id, supplier_id, price, unit_price, sell_unit, unit_qty, at, source, ref_type, ref_id, user)
        VALUES (?,?,?,?,?,?,?, 'purchase', 'PO', ?, ?)`,
-    catalogId, order.supplier_id, order.unit_price, order.unit_price / unitQty,
-    offer?.sell_unit || null, unitQty, at, order.id, userName);
+    catalogId, order.supplier_id, line.unit_price, line.unit_price / unitQty,
+    offer?.sell_unit || null, unitQty, receivedAt, order.id, user.name);
 }
 
-/** 입고: 발주 수량 갱신 + 재고 증가 + 트랜잭션 기록 + 매입전표까지 한 번에. */
-function receiveOrder(id, body, user) {
-  requireRole(user, "warehouse");
-  return tx(() => {
-    const order = get("SELECT * FROM purchase_orders WHERE id = ?", id);
-    if (!order) notFound("발주서를 찾을 수 없습니다.");
-    if (order.status === "승인대기") bad("승인되지 않은 발주는 입고할 수 없습니다.");
-    if (order.status === "취소") bad("취소된 발주입니다.");
-
-    const quantity = int(body.quantity);
-    const remaining = order.quantity - order.received;
-    if (quantity < 1 || quantity > remaining) bad(`입고 가능 수량은 1 ~ ${remaining} 입니다.`);
-
-    const warehouseId = str(body.warehouseId);
-    const warehouse = get("SELECT * FROM warehouses WHERE id = ?", warehouseId);
-    if (!warehouse) bad("입고 창고를 선택해 주세요.");
-
-    const received = order.received + quantity;
-    const status = received >= order.quantity ? "입고완료" : "부분입고";
-    run("UPDATE purchase_orders SET received = ?, status = ? WHERE id = ?", received, status, id);
-
-    moveStock({
-      type: "PURCHASE_RECEIPT", productId: order.product_id, warehouseId,
-      qty: quantity, refType: "PO", refId: id, projectId: order.project_id,
-      user: user.name, note: str(body.note) || `${warehouse.name} 입고`,
-    });
-    run(`UPDATE inventory_balances SET expected = MAX(0, expected - ?)
-         WHERE product_id = ? AND warehouse_id = ?`, quantity, order.product_id, warehouseId);
-    if (str(body.bin)) {
-      run("UPDATE inventory_balances SET bin = ? WHERE product_id = ? AND warehouse_id = ?",
-        str(body.bin), order.product_id, warehouseId);
-    }
-
-    const receiptId = nextDocNo("goods_receipts", "GR");
-    run(`INSERT INTO goods_receipts (id, order_id, warehouse_id, product_id, quantity, received_at, receiver, note)
-         VALUES (?,?,?,?,?,?,?,?)`,
-      receiptId, id, warehouseId, order.product_id, quantity,
-      str(body.receivedAt) || today(), user.name, str(body.note));
-
-    recordPurchasePrice(order, str(body.receivedAt) || today(), user.name);
-
-    // 매입 전표 자동 기표
-    const supplier = get("SELECT name FROM suppliers WHERE id = ?", order.supplier_id);
-    const amount = order.unit_price * quantity;
-    const entryId = nextDocNo("accounting_entries", "JV");
-    run(`INSERT INTO accounting_entries
+/** 입고 한 묶음에 매입전표 한 장. 품목마다 끊으면 전표가 부풀어 오릅니다. */
+function postPurchaseEntry({ order, batchId, amount, receivedAt, results }) {
+  if (!amount) return null;
+  const supplier = get("SELECT name FROM suppliers WHERE id = ?", order.supplier_id);
+  // 여러 공사의 자재가 한 발주에 섞일 수 있어, 줄이 하나일 때만 공사를 답니다.
+  const projects = [...new Set(linesOf(order.id).map((line) => line.project_id).filter(Boolean))];
+  const entryId = nextDocNo("accounting_entries", "JV");
+  run(`INSERT INTO accounting_entries
          (id, date, type, account, counterparty, description, project_id, debit, credit, status, created_at)
-         VALUES (?,?,'매입','공사재료비',?,?,?,?,0,'검토',?)`,
-      entryId, str(body.receivedAt) || today(), supplier?.name || "",
-      `${id} 입고 ${quantity}`, order.project_id, amount, nowIso());
-
-    auditLog(user.name, "입고", "입고 처리", `${id} / ${quantity} / ${warehouse.name}`);
-    return {
-      order: get(`${PO_SQL} WHERE o.id = ?`, id),
-      receiptId,
-      entryId,
-      inventory: inventoryRows("WHERE b.product_id = ? AND b.warehouse_id = ?", order.product_id, warehouseId)[0],
-    };
-  });
+       VALUES (?,?,'매입','공사재료비',?,?,?,?,0,'검토',?)`,
+    entryId, receivedAt, supplier?.name || "",
+    `${order.id} 입고 ${results.length}품목`, projects.length === 1 ? projects[0] : null,
+    amount, nowIso());
+  return entryId;
 }
+
+function createOrderRoute(body, user) {
+  requireRole(user, "purchasing");
+  return withPrices(createOrder(body, user), user);
+}
+
+function bundleRequestsRoute(body, user) {
+  requireRole(user, "purchasing");
+  return withPrices(bundleRequests(body, user), user);
+}
+
+function approveOrderRoute(id, body, user) {
+  requireRole(user, "purchasing");
+  return withPrices(approveOrder(id, body, user), user);
+}
+
+function cancelOrderRoute(id, user) {
+  requireRole(user, "purchasing");
+  return withPrices(cancelOrder(id, user), user);
+}
+
+function receiveOrderRoute(id, body, user) {
+  requireRole(user, "warehouse");
+  const result = receiveOrder(id, body, user, {
+    onLineReceived: recordPurchasePrice,
+    onBatch: postPurchaseEntry,
+  });
+  return {
+    ...result,
+    order: withPrices(result.order, user),
+    // 한 번에 여러 품목이 들어오므로 영향을 받은 재고를 모두 돌려줍니다.
+    inventory: result.lines.map((line) =>
+      inventoryRows("WHERE b.product_id = ? AND b.warehouse_id = ?", line.productId, str(body.warehouseId))[0])
+      .filter(Boolean),
+  };
+}
+
 
 function transferStock(body, user) {
   requireRole(user, "warehouse");
@@ -839,7 +818,7 @@ function reports(url) {
        FROM sales_orders WHERE invoice_date IS NOT NULL GROUP BY label ORDER BY label`),
     projectMargin: all(
       `SELECT p.id, p.name AS label, p.status,
-              COALESCE((SELECT SUM(amount) FROM purchase_orders WHERE project_id = p.id),0) AS cost,
+              COALESCE((SELECT SUM(amount) FROM purchase_order_lines WHERE project_id = p.id),0) AS cost,
               COALESCE((SELECT SUM(amount) FROM sales_orders WHERE project_id = p.id),0) AS sales
        FROM projects p ORDER BY sales DESC`),
     stockTurnover: all(
@@ -945,7 +924,7 @@ export async function handleApi(request, response, url) {
 
   const crudMatch = /^\/api\/(products|suppliers|customers|warehouses|projects|accounting-entries)(?:\/([^/]+))?$/.exec(path);
   if (crudMatch) {
-    if (crudMatch[1] === "accounting-entries") requireFinance(user);
+    if (crudMatch[1] === "accounting-entries") requireAdmin(user, "회계 전표");
     const resource = resources[crudMatch[1]];
     const id = crudMatch[2] && decodeURIComponent(crudMatch[2]);
     if (method === "GET" && !id) {
@@ -966,6 +945,7 @@ export async function handleApi(request, response, url) {
     return json(response, 200, canFinance(user) ? data : stripMoney(data, SUMMARY_MONEY));
   }
   if (method === "GET" && path === "/api/reports") {
+    requireAdmin(user, "경영분석");
     const data = reports(url);
     if (canFinance(user)) return json(response, 200, data);
     // 금액이 들어간 분석은 통째로 빼고, 수량 기반 분석만 돌려줍니다.
@@ -1016,8 +996,15 @@ export async function handleApi(request, response, url) {
     return json(response, 200, canPrices(user) ? rows : stripMoney(rows, ["price"]));
   }
   if (method === "GET" && path === "/api/purchase-orders") {
-    const rows = all(`${PO_SQL} ORDER BY o.id DESC`);
-    return json(response, 200, canPrices(user) ? rows : stripMoney(rows, ["unit_price", "amount"]));
+    const rows = listOrders();
+    return json(response, 200, canPrices(user) ? rows : rows.map(maskOrder));
+  }
+  if (method === "GET" && /^\/api\/purchase-orders\/[^/]+\/sheet$/.test(path)) {
+    return json(response, 200, orderSheet(seg(url, 3), organization()));
+  }
+  if (method === "GET" && /^\/api\/purchase-orders\/[^/]+$/.test(path)) {
+    const order = orderWithLines(seg(url, 3));
+    return json(response, 200, canPrices(user) ? order : maskOrder(order));
   }
   if (method === "GET" && path === "/api/goods-receipts") {
     return json(response, 200, all(
@@ -1090,7 +1077,7 @@ export async function handleApi(request, response, url) {
     const from = url.searchParams.get("from");
     const to = url.searchParams.get("to");
     if (!from || !to) bad("조회 기간(from·to)이 필요합니다.");
-    return json(response, 200, calendarFeed({ from, to, isAdmin: true }));
+    return json(response, 200, calendarFeed({ from, to, isAdmin: user.role === "admin" }));
   }
 
   if (method === "POST" && path === "/api/schedules") {
@@ -1459,6 +1446,7 @@ export async function handleApi(request, response, url) {
 
   /* ---- 입찰정보 ---- */
   if (path.startsWith("/api/bids")) {
+    requireAdmin(user, "입찰");
     if (method === "GET" && path === "/api/bids/status") {
       return json(response, 200, { ...bidStatus(), kinds: BID_KINDS.map((item) => item.key) });
     }
@@ -1504,16 +1492,20 @@ export async function handleApi(request, response, url) {
     return json(response, 200, rejectRequest(seg(url, 3), body, user));
   }
   if (method === "POST" && path === "/api/purchase-orders") {
-    return json(response, 201, createOrder(body, user));
+    return json(response, 201, createOrderRoute(body, user));
+  }
+  // 승인된 구매요청 여러 건을 발주서 한 장으로 묶습니다.
+  if (method === "POST" && path === "/api/purchase-orders/bundle") {
+    return json(response, 201, bundleRequestsRoute(body, user));
   }
   if (method === "POST" && /^\/api\/purchase-orders\/[^/]+\/approve$/.test(path)) {
-    return json(response, 200, approveOrder(seg(url, 3), user));
+    return json(response, 200, approveOrderRoute(seg(url, 3), body, user));
   }
   if (method === "POST" && /^\/api\/purchase-orders\/[^/]+\/cancel$/.test(path)) {
-    return json(response, 200, cancelOrder(seg(url, 3), user));
+    return json(response, 200, cancelOrderRoute(seg(url, 3), user));
   }
   if (method === "POST" && /^\/api\/purchase-orders\/[^/]+\/receive$/.test(path)) {
-    return json(response, 200, receiveOrder(seg(url, 3), body, user));
+    return json(response, 200, receiveOrderRoute(seg(url, 3), body, user));
   }
 
   /* ---- 재고 흐름 ---- */

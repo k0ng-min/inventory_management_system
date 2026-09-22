@@ -141,12 +141,13 @@ async function main() {
 
   const receive1 = await asWarehouse("POST", `/api/purchase-orders/${orderId}/receive`, { quantity: 4, warehouseId: "WH-SMOKE" });
   check("부분 입고", receive1.status === 200 && receive1.body.order.status === "부분입고", JSON.stringify(receive1.body.order));
-  check("입고 후 재고 반영", receive1.body.inventory.on_hand === 4, String(receive1.body.inventory?.on_hand));
+  // 한 번에 여러 품목이 들어올 수 있어 inventory 는 영향받은 재고의 배열입니다.
+  check("입고 후 재고 반영", receive1.body.inventory[0].on_hand === 4, JSON.stringify(receive1.body.inventory));
   check("매입 전표 자동 생성", Boolean(receive1.body.entryId));
 
   const receive2 = await asWarehouse("POST", `/api/purchase-orders/${orderId}/receive`, { quantity: 6, warehouseId: "WH-SMOKE" });
   check("잔량 입고 → 입고완료", receive2.body.order.status === "입고완료");
-  check("입고 완료 후 현재고 10", receive2.body.inventory.on_hand === 10, String(receive2.body.inventory?.on_hand));
+  check("입고 완료 후 현재고 10", receive2.body.inventory[0].on_hand === 10, JSON.stringify(receive2.body.inventory));
 
   const txns = await as("GET", "/api/inventory/transactions?productId=MAT-SMOKE-01");
   check("수불 이력 2건 기록", txns.body.filter((row) => row.type === "PURCHASE_RECEIPT").length === 2, String(txns.body.length));
@@ -215,10 +216,9 @@ async function main() {
   check("전표 등록", entry.status === 201, JSON.stringify(entry.body));
   check("전표 수정", (await as("PUT", `/api/accounting-entries/${entry.body.id}`, { status: "승인" })).body.status === "승인");
   check("전표 삭제", (await as("DELETE", `/api/accounting-entries/${entry.body.id}`)).status === 200);
-  check("직원도 전표 등록", (await asWarehouse("POST", "/api/accounting-entries", {
+  check("전표는 관리자만", (await asWarehouse("POST", "/api/accounting-entries", {
     date: "2026-09-21", type: "경비", account: "소모품비", debit: 10_000,
-  })).status === 201);
-  check("조회전용은 전표 차단", (await asViewer("POST", "/api/accounting-entries", { date: "2026-09-21", type: "경비" })).status === 403);
+  })).status === 403);
 
   console.log("\n입찰정보 (나라장터)");
   const bidStatus = await as("GET", "/api/bids/status");
@@ -319,10 +319,12 @@ async function main() {
   const comparedOrder = await as("POST", `/api/purchase-requests/${comparedRequest.body.id}/approve`, {
     warehouseId: wh.body.id, dueDate: "2026-10-10",
   });
+  // 단가·공급처 판매조건은 이제 발주 줄에 붙습니다.
   check("선택 공급처·단가 → 발주", comparedOrder.status === 200
     && comparedOrder.body.order.supplier_id === selectedOffer.supplier_id
-    && comparedOrder.body.order.unit_price === selectedOffer.price
-    && comparedOrder.body.order.supplier_product_id === selectedOffer.id, JSON.stringify(comparedOrder.body.order));
+    && comparedOrder.body.order.lines[0].unit_price === selectedOffer.price
+    && comparedOrder.body.order.lines[0].supplier_product_id === selectedOffer.id,
+    JSON.stringify(comparedOrder.body.order));
   await asWarehouse("POST", `/api/purchase-orders/${comparedOrder.body.order.id}/receive`, {
     quantity: 2, warehouseId: wh.body.id, receivedAt: "2026-09-22",
   });
@@ -355,6 +357,163 @@ async function main() {
   const alerts = await as("GET", "/api/catalog/price-alerts?days=30&threshold=5");
   check("가격 급등 감지", alerts.status === 200 && alerts.body.some((row) => row.product_id === cv.id && row.change > 0),
     JSON.stringify(alerts.body));
+
+  console.log("\n다품목 발주서");
+
+  // 한 공급처에 세 품목을 한 장으로 발주합니다.
+  const mlProducts = [];
+  for (const [id, name, unit, price] of [
+    ["MAT-ML-01", "CV 10SQ 3C", "m", 3800],
+    ["MAT-ML-02", "VCTF 2.5SQ 2C", "m", 1400],
+    ["MAT-ML-03", "압착단자 R형 10SQ", "EA", 320],
+  ]) {
+    const made = await as("POST", "/api/products", {
+      id, name, category: "케이블", unit, price, supplier: "스모크 공급처",
+    });
+    mlProducts.push(made.body);
+  }
+  check("다품목용 품목 3종", mlProducts.every((row) => row?.id), JSON.stringify(mlProducts.map((r) => r?.id)));
+
+  const mlOrder = await as("POST", "/api/purchase-orders", {
+    supplierId: supplier.body.id,
+    dueDate: "2026-11-05",
+    status: "발주완료",
+    warehouseId: "WH-SMOKE",
+    lines: [
+      { productId: "MAT-ML-01", quantity: 300, unitPrice: 3800, projectId: project.body.id },
+      { productId: "MAT-ML-02", quantity: 100, unitPrice: 1400 },
+      { productId: "MAT-ML-03", quantity: 50, unitPrice: 320, projectId: project.body.id },
+    ],
+  });
+  check("다품목 발주 생성", mlOrder.status === 201 && mlOrder.body.lines.length === 3,
+    JSON.stringify(mlOrder.body.lines?.length));
+  check("발주번호는 하나", /^PO-\d{6}-\d{4}$/.test(mlOrder.body.id), mlOrder.body.id);
+  check("줄 번호는 1부터", mlOrder.body.lines.map((row) => row.line_no).join(",") === "1,2,3",
+    mlOrder.body.lines.map((row) => row.line_no).join(","));
+  check("줄 id 는 발주번호-줄번호", mlOrder.body.lines[1].id === `${mlOrder.body.id}-02`, mlOrder.body.lines[1].id);
+  check("헤더 수량은 줄의 합", mlOrder.body.quantity === 450, String(mlOrder.body.quantity));
+  check("헤더 금액은 줄의 합", mlOrder.body.amount === 300 * 3800 + 100 * 1400 + 50 * 320,
+    String(mlOrder.body.amount));
+  check("줄마다 공사가 다를 수 있음",
+    mlOrder.body.lines[0].project_id === project.body.id && mlOrder.body.lines[1].project_id === null,
+    JSON.stringify(mlOrder.body.lines.map((row) => row.project_id)));
+
+  check("줄이 없으면 거부",
+    (await as("POST", "/api/purchase-orders", { supplierId: supplier.body.id, lines: [] })).status === 400);
+  check("줄 수량 0은 거부", (await as("POST", "/api/purchase-orders", {
+    supplierId: supplier.body.id, lines: [{ productId: "MAT-ML-01", quantity: 0 }],
+  })).status === 400);
+  check("없는 품목 줄은 거부", (await as("POST", "/api/purchase-orders", {
+    supplierId: supplier.body.id, lines: [{ productId: "NOPE", quantity: 1 }],
+  })).status === 400);
+
+  // 줄마다 따로 입고 — A 는 일부, B 는 전량, C 는 미도착
+  const mlId = mlOrder.body.id;
+  const lineA = mlOrder.body.lines[0].id;
+  const lineB = mlOrder.body.lines[1].id;
+  const lineC = mlOrder.body.lines[2].id;
+
+  const partial = await asWarehouse("POST", `/api/purchase-orders/${mlId}/receive`, {
+    warehouseId: "WH-SMOKE", receivedAt: "2026-09-22",
+    lines: [{ lineId: lineA, quantity: 100 }, { lineId: lineB, quantity: 100 }, { lineId: lineC, quantity: 0 }],
+  });
+  check("줄별 입고", partial.status === 200 && partial.body.lines.length === 2,
+    JSON.stringify(partial.body.lines?.length));
+  check("수량 0인 줄은 건너뜀", !partial.body.lines.some((row) => row.lineId === lineC),
+    JSON.stringify(partial.body.lines));
+  check("헤더 상태는 줄에서 파생 — 부분입고", partial.body.order.status === "부분입고", partial.body.order.status);
+  check("줄 A 는 부분", partial.body.order.lines[0].received === 100, String(partial.body.order.lines[0].received));
+  check("줄 B 는 완납", partial.body.order.lines[1].received === 100, String(partial.body.order.lines[1].received));
+  check("줄 C 는 미도착", partial.body.order.lines[2].received === 0, String(partial.body.order.lines[2].received));
+  check("입고 묶음은 한 번에 한 번호", /^GR-\d{6}-\d{4}$/.test(partial.body.batchId), partial.body.batchId);
+  check("입고 묶음당 전표 한 장", Boolean(partial.body.entryId), String(partial.body.entryId));
+
+  const receipts = (await as("GET", "/api/goods-receipts")).body.filter((row) => row.order_id === mlId);
+  check("입고 행은 줄마다", receipts.length === 2, String(receipts.length));
+  check("입고 행이 줄을 가리킴", receipts.every((row) => [lineA, lineB].includes(row.line_id)),
+    JSON.stringify(receipts.map((row) => row.line_id)));
+
+  check("줄 잔량을 넘기면 거부", (await asWarehouse("POST", `/api/purchase-orders/${mlId}/receive`, {
+    warehouseId: "WH-SMOKE", lines: [{ lineId: lineA, quantity: 999 }],
+  })).status === 400);
+  check("다른 발주의 줄은 거부", (await asWarehouse("POST", `/api/purchase-orders/${mlId}/receive`, {
+    warehouseId: "WH-SMOKE", lines: [{ lineId: "PO-NOPE-0001-01", quantity: 1 }],
+  })).status === 400);
+
+  const rest = await asWarehouse("POST", `/api/purchase-orders/${mlId}/receive`, {
+    warehouseId: "WH-SMOKE", lines: [{ lineId: lineA, quantity: 200 }, { lineId: lineC, quantity: 50 }],
+  });
+  check("남은 줄까지 입고 → 입고완료", rest.body.order.status === "입고완료", rest.body.order.status);
+  check("헤더 입고합 = 발주수량", rest.body.order.received === 450, String(rest.body.order.received));
+
+  // 인쇄용 발주서
+  const sheet = await as("GET", `/api/purchase-orders/${mlId}/sheet`);
+  check("인쇄용 발주서 조회", sheet.status === 200 && sheet.body.order.lines.length === 3);
+  check("공급가액", sheet.body.supply === mlOrder.body.amount, String(sheet.body.supply));
+  check("부가세 10%", sheet.body.vat === Math.round(sheet.body.supply * 0.1), String(sheet.body.vat));
+  check("합계 = 공급가 + 부가세", sheet.body.total === sheet.body.supply + sheet.body.vat, String(sheet.body.total));
+  check("한글 금액", sheet.body.amountInWords.endsWith("원정"), sheet.body.amountInWords);
+  check("발주서에 공급처 정보", sheet.body.order.supplier_name === "스모크 공급처", sheet.body.order.supplier_name);
+  check("발주서에 회사 정보", typeof sheet.body.organization.name === "string", JSON.stringify(sheet.body.organization));
+
+  // 구매요청 여러 건을 한 장으로 묶기
+  const bundleReqs = [];
+  for (const product of ["MAT-ML-01", "MAT-ML-02"]) {
+    const made = await as("POST", "/api/purchase-requests", {
+      productId: product, projectId: project.body.id, quantity: 20,
+      purpose: "묶음 발주 검증", requestedDate: "2026-11-20",
+      supplierId: supplier.body.id,
+    });
+    bundleReqs.push(made.body.id);
+  }
+  const bundled = await as("POST", "/api/purchase-orders/bundle", {
+    requestIds: bundleReqs, supplierId: supplier.body.id, warehouseId: "WH-SMOKE",
+  });
+  check("요청 2건 → 발주 1장", bundled.status === 201 && bundled.body.lines.length === 2,
+    JSON.stringify(bundled.body.lines?.length));
+  check("줄이 요청을 가리킴",
+    bundled.body.lines.map((row) => row.request_id).sort().join() === [...bundleReqs].sort().join(),
+    JSON.stringify(bundled.body.lines.map((row) => row.request_id)));
+  const afterBundle = (await as("GET", "/api/purchase-requests")).body
+    .filter((row) => bundleReqs.includes(row.id));
+  check("묶인 요청은 발주완료", afterBundle.every((row) => row.status === "발주완료"),
+    JSON.stringify(afterBundle.map((row) => row.status)));
+  check("이미 발주된 요청은 다시 못 묶음",
+    (await as("POST", "/api/purchase-orders/bundle", { requestIds: bundleReqs })).status === 400);
+  check("빈 목록은 거부", (await as("POST", "/api/purchase-orders/bundle", { requestIds: [] })).status === 400);
+
+  // 공급처가 섞이면 한 장으로 못 보냅니다.
+  const otherReq = await as("POST", "/api/purchase-requests", {
+    productId: "MAT-ML-03", projectId: project.body.id, quantity: 5,
+    purpose: "공급처 섞임 검증", supplierId: supplierB.body.id,
+  });
+  const sameReq = await as("POST", "/api/purchase-requests", {
+    productId: "MAT-ML-01", projectId: project.body.id, quantity: 5,
+    purpose: "공급처 섞임 검증", supplierId: supplier.body.id,
+  });
+  check("공급처가 섞이면 거부", (await as("POST", "/api/purchase-orders/bundle", {
+    requestIds: [sameReq.body.id, otherReq.body.id], supplierId: supplier.body.id,
+  })).status === 400);
+
+  // 취소는 입고예정을 되돌립니다.
+  const toCancel = await as("POST", "/api/purchase-orders", {
+    supplierId: supplier.body.id, status: "발주완료", warehouseId: "WH-SMOKE",
+    lines: [{ productId: "MAT-ML-03", quantity: 30, unitPrice: 320 }],
+  });
+  const beforeCancel = (await as("GET", "/api/inventory?warehouse=WH-SMOKE")).body
+    .find((row) => row.product_id === "MAT-ML-03");
+  const cancelled = await as("POST", `/api/purchase-orders/${toCancel.body.id}/cancel`, {});
+  const afterCancel = (await as("GET", "/api/inventory?warehouse=WH-SMOKE")).body
+    .find((row) => row.product_id === "MAT-ML-03");
+  check("발주 취소", cancelled.body.status === "취소", cancelled.body.status);
+  check("취소하면 입고예정이 돌아옴", afterCancel.expected === beforeCancel.expected - 30,
+    `${beforeCancel.expected} → ${afterCancel.expected}`);
+  check("입고된 발주는 취소 불가",
+    (await as("POST", `/api/purchase-orders/${mlId}/cancel`, {})).status === 400);
+
+  check("발주 목록에 줄이 함께 옴",
+    (await as("GET", "/api/purchase-orders")).body.find((row) => row.id === mlId)?.lines.length === 3);
+  check("조회전용에겐 줄 금액도 숨김 — 이제는 공개", (await asViewer("GET", "/api/purchase-orders")).status === 200);
 
   console.log("\n견적함 · 업체별 견적 비교");
 
@@ -615,23 +774,39 @@ async function main() {
 
   console.log("\n권한 — 업무는 전원 개방, 시스템 설정만 관리자");
   // 5명 회사라 업무 화면과 금액은 서로 대신 봅니다. 막는 것은 시스템 설정뿐입니다.
+  // 업무 화면과 금액은 전원 공개, 회계·입찰·분석은 사장 몫입니다.
   for (const [label, path] of [
-    ["입찰 목록", "/api/bids"],
-    ["입찰 캘린더", "/api/bids/calendar?from=2026-01-01&to=2026-12-31"],
-    ["입찰 상태", "/api/bids/status"],
-    ["경영분석", "/api/reports"],
     ["매출 목록", "/api/sales-orders"],
     ["수금 목록", "/api/payments"],
+    ["재고", "/api/inventory"],
+    ["발주서", "/api/purchase-orders"],
   ]) {
     for (const [who, call] of [["관리자", as], ["구매담당", asPurchasing], ["창고담당", asWarehouse], ["조회전용", asViewer]]) {
       check(`${who} ${label} 허용`, (await call("GET", path)).status === 200);
     }
   }
-  check("구매담당 입찰 동기화 허용", (await asPurchasing("POST", "/api/bids/sync", {})).status === 200);
-  check("조회전용 입찰 동기화 차단", (await asViewer("POST", "/api/bids/sync", {})).status === 403);
+
+  // 회계·입찰·분석은 모듈 통째로 관리자 전용입니다. 주소창으로 직접 열어도 막힙니다.
+  for (const [label, path] of [
+    ["입찰 목록", "/api/bids"],
+    ["입찰 캘린더", "/api/bids/calendar?from=2026-01-01&to=2026-12-31"],
+    ["입찰 상태", "/api/bids/status"],
+    ["경영분석", "/api/reports"],
+    ["회계 전표", "/api/accounting-entries"],
+  ]) {
+    check(`관리자 ${label} 허용`, (await as("GET", path)).status === 200);
+    for (const [who, call] of [["구매담당", asPurchasing], ["창고담당", asWarehouse], ["조회전용", asViewer]]) {
+      check(`${who} ${label} 차단`, (await call("GET", path)).status === 403);
+    }
+  }
+  check("구매담당 입찰 동기화 차단", (await asPurchasing("POST", "/api/bids/sync", {})).status === 403);
+  check("구매담당 전표 등록 차단",
+    (await asPurchasing("POST", "/api/accounting-entries", { date: "2026-09-21", type: "경비" })).status === 403);
   check("직원은 사용자 관리 차단", (await asPurchasing("GET", "/api/admin/users")).status === 403);
   check("직원은 회사정보 수정 차단",
     (await asPurchasing("PUT", "/api/admin/organization", { name: "x" })).status === 403);
+  check("비관리자 달력엔 입찰이 비어 있음",
+    (await asWarehouse("GET", "/api/calendar?from=2026-10-01&to=2026-10-31")).body.bids.length === 0);
 
   console.log("\n팀 공유 일정");
   const mk = (over = {}) => ({
@@ -683,8 +858,8 @@ async function main() {
   check("달력 피드 조회", cal.status === 200 && Array.isArray(cal.body.schedules) && Array.isArray(cal.body.projects),
     JSON.stringify(Object.keys(cal.body)));
   check("달력 기간 없으면 거부", (await as("GET", "/api/calendar")).status === 400);
-  check("직원 달력에도 입찰 마감이 실림",
-    Array.isArray((await asWarehouse("GET", "/api/calendar?from=2026-10-01&to=2026-10-31")).body.bids));
+  check("직원 달력에도 일정은 그대로",
+    Array.isArray((await asWarehouse("GET", "/api/calendar?from=2026-10-01&to=2026-10-31")).body.schedules));
 
   check("일정 삭제", (await asWarehouse("DELETE", `/api/schedules/${leave.body.id}`)).status === 200);
   check("삭제 후 조회되지 않음",

@@ -1334,3 +1334,62 @@ table.qt-lines small.over { display: block; font-size: 11px; color: var(--warn);
   .qt-sup-row { flex-wrap: wrap; }
   .qt-sup-figs { gap: 14px; }
 }
+
+/* ==========================================================================
+   다품목 발주서
+   발주번호 하나에 품목 줄이 달립니다. 펼친 패널·입고 모달·등록 모달이
+   같은 표 모양을 씁니다.
+   ========================================================================== */
+
+table.ol { width: 100%; border-collapse: collapse; }
+table.ol th, table.ol td {
+  padding: 10px 12px; font-size: 14px; text-align: left;
+  border-bottom: 1px solid var(--line-soft); vertical-align: middle;
+}
+table.ol th {
+  font-size: 12px; font-weight: 600; color: var(--fg-3);
+  background: var(--surface-2); white-space: nowrap;
+}
+table.ol th.num, table.ol td.num { text-align: right; font-variant-numeric: tabular-nums; }
+table.ol td.code { color: var(--fg-3); font-size: 13px; }
+table.ol td.strong { font-weight: 600; }
+table.ol td.strong small { display: block; font-size: 12px; font-weight: 400; color: var(--fg-3); }
+table.ol td b.warn { color: var(--warn); }
+table.ol tr.done td { color: var(--fg-3); }
+table.ol tr.done td.strong { color: var(--fg-2); }
+table.ol tbody tr:last-child td { border-bottom: none; }
+
+.recv-quick { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
+.recv-quick .muted { font-size: 13px; }
+.recv-quick .muted b { color: var(--fg); font-weight: 600; font-variant-numeric: tabular-nums; }
+
+.recv-qty, .ol-qty, .ol-price {
+  height: 34px; padding: 0 10px; font: inherit; font-size: 14px; text-align: right;
+  font-variant-numeric: tabular-nums; border: 1px solid var(--line);
+  border-radius: var(--r-sm); background: var(--surface); width: 96px;
+}
+.recv-bin {
+  height: 34px; padding: 0 10px; font: inherit; font-size: 14px;
+  border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--surface); width: 120px;
+}
+.recv-qty:focus, .recv-bin:focus, .ol-qty:focus, .ol-price:focus {
+  outline: 2px solid var(--accent-soft); outline-offset: -1px;
+}
+table.ol.edit td { padding: 8px 8px; }
+table.ol.edit td:first-child { min-width: 220px; }
+
+/* 인쇄용 발주서 — 공급자/공급받는자 두 칸 */
+.paper-parties { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 20px; }
+.paper-parties > div {
+  border: 1px solid var(--line); border-radius: var(--r-md); padding: 14px 16px; background: var(--surface-2);
+}
+.paper-parties span { display: block; font-size: 12px; color: var(--fg-3); margin-bottom: 6px; }
+.paper-parties b { font-size: 16px; font-weight: 600; }
+.paper-parties small { display: block; font-size: 12px; color: var(--fg-2); margin-top: 3px; }
+.paper-sum {
+  display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap;
+  padding: 14px 18px; margin-bottom: 20px;
+  border: 1px solid var(--fg); border-radius: var(--r-md);
+}
+.paper-sum span { font-size: 13px; color: var(--fg-2); }
+.paper-sum b { font-size: 17px; font-weight: 700; letter-spacing: -0.01em; }

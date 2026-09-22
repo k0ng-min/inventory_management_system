@@ -249,6 +249,8 @@ export function openForm({ title, sub, width, fields, values = {}, submitLabel =
 
     const body = h("div", {},
       extra?.readout || null,
+      // 표처럼 필드로 표현할 수 없는 것을 폼 안에 넣습니다(예: 발주 품목 줄 편집).
+      extra?.node || null,
       list,
       calcBox,
       footNote ? h("p.muted", { style: { margin: "10px 2px 0", fontSize: "10.5px", lineHeight: "1.55" }, text: footNote }) : null);

@@ -2344,6 +2344,169 @@ function pickProduct() {
   });
 }
 
+/* ---------- 발주서 (다품목) -------------------------------------------------
+   발주번호 하나에 품목이 여러 줄 달립니다. 목록은 발주서 단위로 보여 주고,
+   행을 누르면 줄이 펼쳐집니다. 입고도 줄마다 따로 찍습니다 — 자재는 나뉘어
+   들어오는 것이 보통이라 "한 번에 전량" 을 전제하면 현장과 어긋납니다. */
+
+/** 줄 요약 — 목록 한 칸에 "CV 10SQ 3C 외 2품목" 으로 접습니다. */
+const lineSummary = (order) => {
+  const lines = order.lines || [];
+  if (!lines.length) return "-";
+  const first = lines[0].product_name || lines[0].product_id || "품목";
+  return lines.length > 1 ? `${first} 외 ${lines.length - 1}품목` : first;
+};
+
+/** 발주 줄 표 — 펼친 패널과 입고 화면이 같은 모양을 씁니다. */
+function orderLineTable(order) {
+  return h("table.ol", {},
+    h("thead", {}, h("tr", {}, ...[
+      "#", "품목", "공사", "발주", "입고", "미입고",
+      ...(ref.canPrices ? ["단가", "금액"] : []),
+    ].map((label, index) => h(`th${index >= 3 ? ".num" : ""}`, { text: label })))),
+    h("tbody", {}, order.lines.map((line) => h(`tr${line.remaining === 0 ? ".done" : ""}`, {}, ...[
+      h("td.code", { text: String(line.line_no) }),
+      h("td.strong", {}, line.product_name || line.product_id,
+        line.manufacturer ? h("small", { text: line.manufacturer }) : null),
+      h("td", { text: line.project_name || "-" }),
+      h("td.num", { text: `${fmt.int(line.quantity)}${line.unit || ""}` }),
+      h("td.num", { text: fmt.int(line.received) }),
+      h("td.num", {}, h(`b${line.remaining > 0 ? ".warn" : ""}`, { text: fmt.int(line.remaining) })),
+      ...(ref.canPrices ? [
+        h("td.num", { text: fmt.won(line.unit_price) }),
+        h("td.num.strong", { text: fmt.won(line.amount) }),
+      ] : []),
+    ]))));
+}
+
+/** 발주서 한 장을 펼쳐 봅니다. */
+function orderPanel(order, refresh) {
+  openPanel({
+    title: `발주서 ${order.id}`,
+    sub: `${order.supplier_name || "-"} · ${order.lines.length}품목 · ${ref.canPrices ? fmt.won(order.amount) : `${fmt.int(order.quantity)}개`}`,
+    width: "xwide",
+    content: h("div", {}, orderLineTable(order)),
+    actions: [
+      h("button.btn", { onclick: () => { closeModal(); openOrderSheet(order.id); } }, "인쇄"),
+      order.remaining > 0 && !["승인대기", "취소"].includes(order.status) && ref.can("warehouse")
+        ? h("button.btn.primary", { onclick: () => { closeModal(); receiveDialog(order, refresh); } }, "입고")
+        : null,
+    ].filter(Boolean),
+  });
+}
+
+/* ---------- 인쇄용 발주서 ---------------------------------------------------
+   공급처에 그대로 보내는 A4 한 장입니다. 작업별 영수증과 같은 .paper 를 씁니다. */
+
+/** 인쇄 화면이 열릴 때 어느 발주서를 그릴지 알려 주는 자리입니다. */
+const sheetRequest = { orderId: null };
+
+function openOrderSheet(orderId) {
+  sheetRequest.orderId = orderId;
+  openScreen("pur.sheet");
+}
+
+function orderSheetScreen() {
+  const state = { orderId: null, data: null, orders: [] };
+  const side = h("div.receipt-side");
+  const paper = h("div.paper");
+
+  async function refresh() {
+    state.orders = (await api("/api/purchase-orders")).filter((row) => row.status !== "취소");
+    if (sheetRequest.orderId) { state.orderId = sheetRequest.orderId; sheetRequest.orderId = null; }
+    if (!state.orders.some((row) => row.id === state.orderId)) state.orderId = state.orders[0]?.id || null;
+
+    side.replaceChildren(...[
+      h("div.hd", { text: `발주서 ${state.orders.length}건` }),
+      ...state.orders.map((order) => h(`button.prj-btn${state.orderId === order.id ? ".on" : ""}`, {
+        onclick: () => { state.orderId = order.id; refresh(); },
+      },
+        h("b", { text: order.supplier_name || "-" }),
+        h("span", { text: `${order.id} · ${order.lines.length}품목` }),
+        h("small", { text: ref.canPrices ? fmt.won(order.amount) : `${fmt.int(order.quantity)}개` }))),
+    ]);
+
+    if (!state.orderId) {
+      paper.replaceChildren(h("p.muted", { text: "인쇄할 발주서가 없습니다." }));
+      return;
+    }
+    state.data = await api(`/api/purchase-orders/${encodeURIComponent(state.orderId)}/sheet`);
+    drawPaper();
+  }
+
+  function drawPaper() {
+    const { order, organization, supply, vat, total, amountInWords, printedAt } = state.data;
+    paper.innerHTML = `
+      <div class="paper-top">
+        <div><h2>발 주 서</h2><div class="muted" style="font-size:11px;margin-top:4px">PURCHASE ORDER</div></div>
+        <div class="meta">${esc(order.id)}<br>발행일 ${esc(printedAt)}</div>
+      </div>
+      <div class="paper-parties">
+        <div>
+          <span>공급받는 자</span>
+          <b>${esc(organization.name || "-")}</b>
+          <small>사업자번호 ${esc(organization.businessNumber || "-")}</small>
+          <small>${esc(organization.address || "-")}</small>
+          <small>전화 ${esc(organization.phone || "-")} · 담당 ${esc(order.approver || "-")}</small>
+        </div>
+        <div>
+          <span>공급자</span>
+          <b>${esc(order.supplier_name || "-")}</b>
+          <small>사업자번호 ${esc(order.supplier_biz_no || "-")}</small>
+          <small>담당 ${esc(order.supplier_contact || "-")}</small>
+          <small>전화 ${esc(order.supplier_phone || "-")} · ${esc(order.supplier_email || "-")}</small>
+        </div>
+      </div>
+      <div class="paper-sum">
+        <span>합계금액 (부가세 포함)</span>
+        <b>일금 ${esc(amountInWords)} (${fmt.won(total)})</b>
+      </div>
+      <table>
+        <thead><tr>
+          <th style="width:38px">No</th><th>품목 · 규격</th><th style="width:120px">공사</th>
+          <th style="width:76px" class="num">수량</th><th style="width:60px">단위</th>
+          <th style="width:96px" class="num">단가</th><th style="width:110px" class="num">금액</th>
+        </tr></thead>
+        <tbody>${order.lines.map((line) => `<tr>
+          <td>${line.line_no}</td>
+          <td><b>${esc(line.product_name || line.product_id)}</b>${line.spec ? `<small>${esc(line.spec)}</small>` : ""}</td>
+          <td>${esc(line.project_name || "-")}</td>
+          <td class="num">${fmt.int(line.quantity)}</td>
+          <td>${esc(line.unit || "")}</td>
+          <td class="num">${fmt.won(line.unit_price)}</td>
+          <td class="num"><b>${fmt.won(line.amount)}</b></td>
+        </tr>`).join("")}</tbody>
+      </table>
+      <div class="paper-total">
+        <div><span>공급가액</span><b>${fmt.won(supply)}</b></div>
+        <div><span>부가세</span><b>${fmt.won(vat)}</b></div>
+        <div class="big"><span>합계</span><b>${fmt.won(total)}</b></div>
+      </div>
+      <div class="paper-meta" style="margin-top:26px">
+        <div><span>납기</span><b>${esc(order.due_date || "협의")}</b></div>
+        <div><span>결제조건</span><b>${esc(order.terms || "기존 계약 조건")}</b></div>
+        <div><span>발주일</span><b>${esc(String(order.created_at).slice(0, 10))}</b></div>
+        <div><span>진행상태</span><b>${esc(order.status)}</b></div>
+      </div>
+      ${order.note ? `<div class="paper-note">${esc(order.note)}</div>` : ""}
+      <div class="paper-note">
+        위와 같이 발주하오니 납기일까지 납품하여 주시기 바랍니다.
+        수량·규격이 발주서와 다를 경우 입고 전에 연락 바랍니다.
+      </div>`;
+  }
+
+  const el = h("div.screen", {},
+    h("div.screen-head", {},
+      h("div", {}, h("div.crumb", { text: "구매관리 > 발주서 인쇄" }), h("h1", { text: "발주서" })),
+      h("div.head-actions", {},
+        btn("인쇄", () => window.print(), "primary"),
+        btn("새로고침", () => refresh()))),
+    h("div"),
+    h("div.screen-body", {}, h("div.receipt-layout", {}, side, h("div.receipt-scroll", {}, paper))));
+
+  return { el, refresh };
+}
+
 const purOrder = dataScreen({
   crumb: "구매관리 > 발주서", title: "발주 진행현황",
   initialState: { status: "" },
@@ -2370,25 +2533,25 @@ const purOrder = dataScreen({
     ["미입고 수량", fmt.int(sum(rows, "remaining"))],
     ["승인대기", `${rows.filter((r) => r.status === "승인대기").length}`, rows.some((r) => r.status === "승인대기") ? "bad" : ""],
   ]),
+  onRowClick: (row) => orderPanel(row, () => {}),
   columns: () => [
-    { key: "id", label: "발주번호", cls: "code", width: 122 },
-    { key: "supplier_name", label: "공급처", width: 112 },
-    { key: "project_name", label: "공사", width: 150 },
-    { key: "product_name", label: "품목", cls: "strong" },
-    { key: "quantity", label: "발주", align: "num", width: 62, sum: true },
-    { key: "received", label: "입고", align: "num", width: 62, sum: true },
-    { key: "remaining", label: "미입고", align: "num", width: 68, sum: true, cell: (r) => `<b>${fmt.int(r.remaining)}</b>` },
+    { key: "id", label: "발주번호", cls: "code", width: 126 },
+    { key: "supplier_name", label: "공급처", width: 108 },
+    { key: "_items", label: "품목", cls: "strong ellip", sortValue: (r) => lineSummary(r), cell: (r) => esc(lineSummary(r)) },
+    { key: "line_count", label: "품목", align: "num", width: 58 },
+    { key: "quantity", label: "발주", align: "num", width: 58, sum: true },
+    { key: "received", label: "입고", align: "num", width: 58, sum: true },
+    { key: "remaining", label: "미입고", align: "num", width: 66, sum: true, cell: (r) => `<b>${fmt.int(r.remaining)}</b>` },
     ...(ref.canPrices ? [
-      { key: "unit_price", label: "단가", align: "num", width: 88, cell: (r) => fmt.won(r.unit_price) },
       { key: "amount", label: "발주금액", align: "num", width: 116, sum: true, cell: (r) => fmt.won(r.amount), sumFormat: fmt.won },
     ] : []),
-    { key: "due_date", label: "납기", width: 136, cell: (r) => (["입고완료", "취소"].includes(r.status) ? esc(r.due_date || "") : dueCell(r.due_date)) },
-    { key: "status", label: "상태", width: 86, cell: (r) => statusChip(r.status) },
-    { key: "approver", label: "승인자", width: 72 },
+    { key: "due_date", label: "납기", width: 118, cell: (r) => (["입고완료", "취소"].includes(r.status) ? esc(r.due_date || "") : dueCell(r.due_date)) },
+    { key: "status", label: "상태", width: 108, cell: (r) => statusChip(r.status) },
     {
-      key: "_actions", label: "업무", width: 156, sortable: false, noExport: true,
+      key: "_actions", label: "업무", width: 190, sortable: false, noExport: true,
       cell: (r) => acts(
-        safeExternalUrl(r.source_url) ? act("상품") : "",
+        act("상세"),
+        act("인쇄"),
         r.status === "승인대기" && ref.can("purchasing") ? act("승인", "primary") : "",
         r.remaining > 0 && !["승인대기", "취소"].includes(r.status) && ref.can("warehouse") ? act("입고", "primary") : "",
         r.received === 0 && r.status !== "취소" && ref.can("purchasing") ? act("취소", "danger") : ""),
@@ -2396,7 +2559,8 @@ const purOrder = dataScreen({
   ],
   footer: true,
   rowActions: (refresh) => ({
-    상품: (row) => window.open(safeExternalUrl(row.source_url), "_blank", "noopener,noreferrer"),
+    상세: (row) => orderPanel(row, refresh),
+    인쇄: (row) => openOrderSheet(row.id),
     승인: async (row) => {
       if (!await confirmAsk({ title: "발주 승인", okLabel: "승인", message: `${row.id} / ${row.supplier_name} / ${fmt.won(row.amount)} 발주를 승인합니다.` })) return;
       await guard(() => api(`/api/purchase-orders/${encodeURIComponent(row.id)}/approve`, { method: "POST", body: {} }), "발주를 승인했습니다.");
@@ -2411,48 +2575,179 @@ const purOrder = dataScreen({
   }),
 });
 
+/**
+ * 발주서 직접 등록 — 품목 줄을 붙였다 뗐다 합니다.
+ * 같은 공급처에 여러 품목을 한 장으로 보내는 것이 보통이라, 줄 추가가 기본입니다.
+ */
 function orderDialog(refresh) {
-  let unit = 0;
+  const rows = [];
+  const body = h("tbody");
+  const totalCell = h("b", { text: "₩0" });
+
+  const recalc = () => {
+    const amount = rows.reduce((sum, row) =>
+      sum + (Number(row.qty.value) || 0) * (Number(row.price.value.replace(/[^\d.-]/g, "")) || 0), 0);
+    totalCell.textContent = fmt.won(amount);
+  };
+
+  function addRow(preset = {}) {
+    const product = makeSelect({ options: ref.productOpts, placeholder: "품목 선택" });
+    const project = makeSelect({ options: ref.projectOpts, placeholder: "공사(선택)" });
+    const qty = h("input.ol-qty", { type: "number", min: "1", value: String(preset.quantity || 1) });
+    const price = h("input.ol-price", { type: "text", inputmode: "numeric", value: "0" });
+
+    // 품목을 고르면 기준단가를 넣어 줍니다. 손으로 고칠 수 있습니다.
+    product.addEventListener("change", () => {
+      const picked = ref.product(product.value);
+      if (picked) { price.value = String(picked.price || 0); recalc(); }
+    });
+    qty.addEventListener("input", recalc);
+    price.addEventListener("input", recalc);
+
+    const row = { product, project, qty, price };
+    const tr = h("tr", {},
+      h("td", {}, product),
+      h("td", {}, project),
+      h("td.num", {}, qty),
+      h("td.num", {}, price),
+      h("td.num", {}, h("button.btn.sm.danger", {
+        type: "button",
+        onclick: () => {
+          if (rows.length === 1) return toast("품목은 한 줄 이상 있어야 합니다.", "err");
+          rows.splice(rows.indexOf(row), 1);
+          tr.remove();
+          recalc();
+        },
+      }, "삭제")));
+    rows.push(row);
+    body.append(tr);
+    recalc();
+  }
+
+  addRow();
+
+  const editor = h("div", {},
+    h("div.recv-quick", {},
+      h("button.btn.sm", { type: "button", onclick: () => addRow() }, "＋ 품목 줄 추가"),
+      h("div.grow"),
+      h("span.muted", {}, "발주금액 ", totalCell)),
+    h("table.ol.edit", {},
+      h("thead", {}, h("tr", {}, ...["품목", "공사", "수량", "단가", ""]
+        .map((label, index) => h(`th${[2, 3].includes(index) ? ".num" : ""}`, { text: label })))),
+      body));
+
   return openForm({
-    title: "발주서 직접 등록", width: "wide",
+    title: "발주서 직접 등록", width: "xwide",
+    extra: { node: editor },
     fields: [
       { key: "supplierId", label: "공급처", type: "select", required: true, options: ref.supplierOpts },
-      { key: "productId", label: "품목", type: "select", required: true, options: ref.productOpts,
-        onChange: (state, inputs) => {
-          const product = ref.product(state.productId);
-          if (product && inputs.get("unitPrice")) { inputs.get("unitPrice").value = product.price; state.unitPrice = product.price; }
-        } },
-      { key: "projectId", label: "공사", type: "select", options: ref.projectOpts },
-      { key: "quantity", label: "발주수량", type: "number", required: true, min: 1, value: 1 },
-      { key: "unitPrice", label: "발주단가", type: "won", required: true, unit: "원" },
       { key: "dueDate", label: "납기일", type: "date", value: addDays(today(), 5) },
-      { key: "status", label: "상태", type: "select", placeholder: false, options: [{ value: "승인대기", label: "승인대기" }, { value: "발주완료", label: "발주완료(즉시승인)" }] },
+      {
+        key: "status", label: "상태", type: "select", placeholder: false,
+        options: [{ value: "승인대기", label: "승인대기" }, { value: "발주완료", label: "발주완료(즉시승인)" }],
+      },
+      { key: "note", label: "비고", type: "textarea", full: true },
     ],
-    extra: { calc: { label: "발주금액", compute: (state) => { unit = Number(state.unitPrice) || 0; return fmt.won(unit * (Number(state.quantity) || 0)); } } },
     submitLabel: "발주 등록",
-    onSubmit: (values) => api("/api/purchase-orders", { method: "POST", body: values }),
-  }).then((result) => { if (result) { toast(`발주서 ${result.id}를 등록했습니다.`); refresh(); } });
+    footNote: "품목 줄마다 공사를 따로 지정할 수 있습니다. 공사별 원가는 줄 기준으로 집계됩니다.",
+    onSubmit: (values) => {
+      const lines = rows.map((row) => ({
+        productId: row.product.value,
+        projectId: row.project.value || undefined,
+        quantity: Number(row.qty.value) || 0,
+        unitPrice: Number(String(row.price.value).replace(/[^\d.-]/g, "")) || 0,
+      }));
+      if (lines.some((line) => !line.productId)) throw new Error("품목을 고르지 않은 줄이 있습니다.");
+      if (lines.some((line) => line.quantity < 1)) throw new Error("수량이 1 미만인 줄이 있습니다.");
+      return api("/api/purchase-orders", { method: "POST", body: { ...values, lines } });
+    },
+  }).then((result) => {
+    if (result) { toast(`발주서 ${result.id}를 등록했습니다 (${result.lines.length}품목).`); refresh(); }
+  });
 }
 
+/**
+ * 입고 처리 — 줄마다 수량을 받습니다.
+ * 안 온 품목은 0 으로 두면 이번 입고에서 빠집니다. 창고와 입고일자는 발주 단위
+ * 하나입니다 — 한 번 온 차에서 품목마다 다른 창고로 넣는 일은 없습니다.
+ */
 function receiveDialog(order, refresh) {
+  const pending = (order.lines || []).filter((line) => line.remaining > 0);
+  if (!pending.length) return toast("입고할 잔량이 없습니다.", "err");
+
+  const inputs = new Map();
+  const totalCell = h("b");
+
+  const recalc = () => {
+    const amount = pending.reduce((sum, line) =>
+      sum + (Number(inputs.get(line.id).value) || 0) * (line.unit_price || 0), 0);
+    totalCell.textContent = ref.canPrices ? fmt.won(amount) : "-";
+  };
+
+  const table = h("table.ol.recv", {},
+    h("thead", {}, h("tr", {}, ...["#", "품목", "발주", "기입고", "미입고", "이번 입고", "적치위치"]
+      .map((label, index) => h(`th${[2, 3, 4, 5].includes(index) ? ".num" : ""}`, { text: label })))),
+    h("tbody", {}, pending.map((line) => {
+      const qty = h("input.recv-qty", {
+        type: "number", min: "0", max: String(line.remaining), value: String(line.remaining),
+      });
+      qty.addEventListener("input", recalc);
+      inputs.set(line.id, qty);
+      const bin = h("input.recv-bin", { type: "text", placeholder: "A-01-03" });
+      inputs.set(`${line.id}:bin`, bin);
+      return h("tr", {},
+        h("td.code", { text: String(line.line_no) }),
+        h("td.strong", { text: line.product_name || line.product_id }),
+        h("td.num", { text: `${fmt.int(line.quantity)}${line.unit || ""}` }),
+        h("td.num", { text: fmt.int(line.received) }),
+        h("td.num", {}, h("b", { text: fmt.int(line.remaining) })),
+        h("td.num", {}, qty),
+        h("td", {}, bin));
+    })));
+
+  const quickButtons = h("div.recv-quick", {},
+    h("button.btn.sm", {
+      type: "button",
+      onclick: () => { pending.forEach((line) => { inputs.get(line.id).value = String(line.remaining); }); recalc(); },
+    }, "전량 입고"),
+    h("button.btn.sm", {
+      type: "button",
+      onclick: () => { pending.forEach((line) => { inputs.get(line.id).value = "0"; }); recalc(); },
+    }, "모두 0"),
+    h("div.grow"),
+    h("span.muted", {}, "매입 계상액 ", totalCell));
+
+  recalc();
+
   return openForm({
-    title: "입고 처리", sub: `${order.id} · ${order.supplier_name}`, width: "wide",
-    extra: {
-      readout: h("div.readout", {}, h("b", { text: order.product_name }),
-        h("span", { text: `발주 ${order.quantity} / 입고 ${order.received} / 미입고 ${order.remaining} · 납기 ${order.due_date || "-"}` })),
-      calc: { label: "매입 계상액", compute: (state) => fmt.won((order.unit_price || 0) * (Number(state.quantity) || 0)) },
-    },
+    title: "입고 처리",
+    sub: `${order.id} · ${order.supplier_name || "-"} · ${pending.length}품목 대기`,
+    width: "xwide",
+    extra: { node: h("div", {}, quickButtons, table) },
     fields: [
-      { key: "quantity", label: "입고수량", type: "number", required: true, min: 1, max: order.remaining, value: order.remaining },
       { key: "warehouseId", label: "입고창고", type: "select", required: true, options: ref.warehouseOpts, value: ref.warehouses[0]?.id || "" },
-      { key: "bin", label: "적치위치", placeholder: "예: A-01-03" },
       { key: "receivedAt", label: "입고일자", type: "date", value: today() },
-      { key: "note", label: "검수 비고", type: "textarea", full: true },
+      { key: "note", label: "검수 비고", type: "textarea", full: true, placeholder: "불량·오배송이 있으면 여기에 적어 주세요" },
     ],
     submitLabel: "입고 확정",
-    footNote: "입고를 확정하면 재고가 증가하고 수불 이력·매입 전표가 자동으로 생성됩니다.",
-    onSubmit: (values) => api(`/api/purchase-orders/${encodeURIComponent(order.id)}/receive`, { method: "POST", body: values }),
-  }).then((result) => { if (result) { toast(`입고 완료 — 전표 ${result.entryId} 생성`); refresh(); } });
+    footNote: "안 온 품목은 0 으로 두세요. 이번에 받은 수량만 재고로 잡히고, 나머지는 미입고로 남습니다.",
+    onSubmit: (values) => api(`/api/purchase-orders/${encodeURIComponent(order.id)}/receive`, {
+      method: "POST",
+      body: {
+        ...values,
+        lines: pending.map((line) => ({
+          lineId: line.id,
+          quantity: Number(inputs.get(line.id).value) || 0,
+          bin: inputs.get(`${line.id}:bin`).value || undefined,
+        })).filter((line) => line.quantity > 0),
+      },
+    }),
+  }).then((result) => {
+    if (result) {
+      toast(`입고 ${result.lines.length}품목 완료 — ${result.entryId ? `전표 ${result.entryId}` : "전표 없음"}`);
+      refresh();
+    }
+  });
 }
 
 const purReceive = dataScreen({
@@ -2466,19 +2761,24 @@ const purReceive = dataScreen({
     ["납기 경과", `${rows.filter((r) => r.due_date && r.due_date < today()).length}`, rows.some((r) => r.due_date && r.due_date < today()) ? "bad" : ""],
   ]),
   columns: () => [
-    { key: "due_date", label: "납기", width: 138, cell: (r) => dueCell(r.due_date) },
-    { key: "id", label: "발주번호", cls: "code", width: 128 },
-    { key: "supplier_name", label: "공급처", width: 124 },
-    { key: "product_name", label: "품목", cls: "strong" },
-    { key: "project_name", label: "공사", width: 170 },
-    { key: "quantity", label: "발주", align: "num", width: 64 },
-    { key: "received", label: "입고", align: "num", width: 64 },
-    { key: "remaining", label: "미입고", align: "num", width: 72, sum: true, cell: (r) => `<b>${fmt.int(r.remaining)}</b>` },
-    { key: "status", label: "상태", width: 76, cell: (r) => statusChip(r.status) },
-    { key: "_actions", label: "업무", width: 80, sortable: false, noExport: true, cell: () => (ref.can("warehouse") ? act("입고", "primary") : "") },
+    { key: "due_date", label: "납기", width: 118, cell: (r) => dueCell(r.due_date) },
+    { key: "id", label: "발주번호", cls: "code", width: 126 },
+    { key: "supplier_name", label: "공급처", width: 108 },
+    { key: "_items", label: "품목", cls: "strong ellip", sortValue: (r) => lineSummary(r), cell: (r) => esc(lineSummary(r)) },
+    { key: "_pending", label: "미도착", align: "num", width: 72,
+      sortValue: (r) => r.lines.filter((line) => line.remaining > 0).length,
+      cell: (r) => `${r.lines.filter((line) => line.remaining > 0).length} / ${r.lines.length}` },
+    { key: "remaining", label: "미입고", align: "num", width: 80, sum: true, cell: (r) => `<b>${fmt.int(r.remaining)}</b>` },
+    { key: "status", label: "상태", width: 108, cell: (r) => statusChip(r.status) },
+    { key: "_actions", label: "업무", width: 124, sortable: false, noExport: true,
+      cell: () => acts(act("상세"), ref.can("warehouse") ? act("입고", "primary") : "") },
   ],
   footer: true,
-  rowActions: (refresh) => ({ 입고: (row) => receiveDialog(row, refresh) }),
+  onRowClick: (row) => orderPanel(row, () => {}),
+  rowActions: (refresh) => ({
+    상세: (row) => orderPanel(row, refresh),
+    입고: (row) => receiveDialog(row, refresh),
+  }),
   empty: { title: "입고 대기 중인 발주가 없습니다", hint: "발주서 화면에서 승인된 발주가 여기에 표시됩니다." },
 });
 
@@ -3815,17 +4115,17 @@ export const MODULES = [
     ],
   },
   {
-    id: "accounting", name: "회계", groups: [
+    id: "accounting", name: "회계", need: "admin", groups: [
       { name: "회계관리", items: [["acc.ledger", "전표 입력·조회"], ["acc.fund", "자금현황"]] },
     ],
   },
   {
-    id: "bid", name: "입찰", groups: [
+    id: "bid", name: "입찰", need: "admin", groups: [
       { name: "나라장터", items: [["bid.calendar", "입찰 캘린더"], ["bid.list", "입찰공고 조회"], ["bid.star", "관심공고"]] },
     ],
   },
   {
-    id: "report", name: "분석", groups: [
+    id: "report", name: "분석", need: "admin", groups: [
       { name: "경영분석", items: [["rpt.purchase", "구매분석"], ["rpt.inventory", "재고분석"], ["prj.cost", "공사수익"]] },
     ],
   },
@@ -3855,6 +4155,7 @@ export const SCREENS = {
   "pur.quote": { title: "견적 비교", build: quoteScreen },
   "pur.request": { title: "구매요청", build: purRequest },
   "pur.order": { title: "발주서", build: purOrder },
+  "pur.sheet": { title: "발주서 인쇄", build: orderSheetScreen },
   "pur.receive": { title: "입고처리", build: purReceive },
   "pur.receipts": { title: "입고내역", build: purReceipts },
   "sal.order": { title: "매출등록", build: salOrder },

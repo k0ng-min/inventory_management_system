@@ -130,23 +130,43 @@ CREATE TABLE IF NOT EXISTS purchase_requests (
   created_at TEXT NOT NULL
 );
 
+-- 발주서 헤더. 품목은 purchase_order_lines 에 있습니다.
+-- quantity·received·amount 는 줄의 합입니다 — 대시보드와 미지급금이 이 값을 씁니다.
 CREATE TABLE IF NOT EXISTS purchase_orders (
   id TEXT PRIMARY KEY,
-  request_id TEXT,
-  supplier_product_id TEXT,
-  source_url TEXT,
   supplier_id TEXT REFERENCES suppliers(id),
-  project_id TEXT REFERENCES projects(id),
-  product_id TEXT REFERENCES products(id),
-  quantity INTEGER NOT NULL,
+  line_count INTEGER NOT NULL DEFAULT 0,
+  quantity INTEGER NOT NULL DEFAULT 0,
   received INTEGER NOT NULL DEFAULT 0,
-  unit_price INTEGER NOT NULL DEFAULT 0,
   amount INTEGER NOT NULL DEFAULT 0,
   due_date TEXT,
   status TEXT NOT NULL DEFAULT '승인대기',
   approver TEXT,
+  note TEXT,
   created_at TEXT NOT NULL
 );
+
+-- 발주서 품목 줄. 발주번호 하나에 여러 품목이 달립니다.
+-- 공급처에 보내는 발주서와 1:1 로 맞추려면 번호가 하나여야 합니다.
+-- 수량·단가·입고는 전부 줄에 붙고, 헤더의 quantity/received/amount 는 줄의 합입니다.
+CREATE TABLE IF NOT EXISTS purchase_order_lines (
+  id TEXT PRIMARY KEY,                 -- PO-2609-0001-01
+  order_id TEXT NOT NULL REFERENCES purchase_orders(id) ON DELETE CASCADE,
+  line_no INTEGER NOT NULL,
+  product_id TEXT REFERENCES products(id),
+  project_id TEXT REFERENCES projects(id),
+  request_id TEXT,
+  supplier_product_id TEXT,
+  source_url TEXT,
+  quantity INTEGER NOT NULL,
+  received INTEGER NOT NULL DEFAULT 0,
+  unit_price INTEGER NOT NULL DEFAULT 0,
+  amount INTEGER NOT NULL DEFAULT 0,
+  note TEXT,
+  UNIQUE (order_id, line_no)
+);
+CREATE INDEX IF NOT EXISTS idx_po_lines_order ON purchase_order_lines(order_id);
+CREATE INDEX IF NOT EXISTS idx_po_lines_product ON purchase_order_lines(product_id);
 
 CREATE TABLE IF NOT EXISTS goods_receipts (
   id TEXT PRIMARY KEY,
@@ -433,9 +453,43 @@ ensureColumn("products", "catalog_product_id", "TEXT");
 ensureColumn("purchase_requests", "preferred_supplier_id", "TEXT");
 ensureColumn("purchase_requests", "supplier_product_id", "TEXT");
 ensureColumn("purchase_requests", "quoted_unit_price", "REAL");
-ensureColumn("purchase_orders", "supplier_product_id", "TEXT");
-ensureColumn("purchase_orders", "source_url", "TEXT");
 ensureColumn("catalog_products", "certification", "TEXT");
+ensureColumn("goods_receipts", "line_id", "TEXT");
+ensureColumn("goods_receipts", "batch_id", "TEXT");
+// 다품목 발주로 올리기 전에, 기존 DB 에도 헤더 열이 있어야 합니다.
+ensureColumn("purchase_orders", "note", "TEXT");
+ensureColumn("purchase_orders", "line_count", "INTEGER NOT NULL DEFAULT 0");
+
+/**
+ * 1발주 1품목 → 다품목 발주서로 올립니다.
+ * 기존 발주 한 건을 1번 줄로 옮기고, 품목에 매인 열을 헤더에서 뺍니다.
+ * quantity·received·amount 는 줄의 합이라는 뜻으로 바뀌어 그대로 남습니다 —
+ * 대시보드·미지급금·구매분석 쿼리가 계속 동작합니다.
+ */
+function migrateOrderLines() {
+  const columns = db.prepare("PRAGMA table_info(purchase_orders)").all().map((row) => row.name);
+  if (!columns.includes("product_id")) return;    // 이미 이관됐습니다
+
+  const orders = db.prepare("SELECT * FROM purchase_orders").all();
+  const insert = db.prepare(`INSERT OR IGNORE INTO purchase_order_lines
+      (id, order_id, line_no, product_id, project_id, request_id, supplier_product_id,
+       source_url, quantity, received, unit_price, amount)
+     VALUES (?,?,1,?,?,?,?,?,?,?,?,?)`);
+  for (const order of orders) {
+    insert.run(`${order.id}-01`, order.id, order.product_id, order.project_id,
+      order.request_id, order.supplier_product_id, order.source_url,
+      order.quantity, order.received, order.unit_price, order.amount);
+  }
+  // 입고 이력도 그 줄에 붙여 둡니다.
+  db.exec("UPDATE goods_receipts SET line_id = order_id || '-01' WHERE line_id IS NULL AND order_id IS NOT NULL");
+
+  for (const column of ["product_id", "project_id", "request_id", "supplier_product_id", "source_url", "unit_price"]) {
+    if (columns.includes(column)) db.exec(`ALTER TABLE purchase_orders DROP COLUMN ${column}`);
+  }
+  db.exec("UPDATE purchase_orders SET line_count = 1 WHERE line_count = 0");
+  if (orders.length) console.log(`  발주 ${orders.length}건을 다품목 구조로 옮겼습니다.`);
+}
+migrateOrderLines();
 ensureColumn("supplier_products", "price_basis", "TEXT NOT NULL DEFAULT 'quote'");
 ensureColumn("supplier_products", "product_url", "TEXT");
 db.exec("CREATE INDEX IF NOT EXISTS idx_products_catalog ON products(catalog_product_id)");
@@ -467,14 +521,27 @@ export const get = (sql, ...params) => db.prepare(sql).get(...params);
 export const run = (sql, ...params) => db.prepare(sql).run(...params);
 
 /** Runs `fn` inside a transaction; rolls back and rethrows on failure. */
+/**
+ * 트랜잭션. 중첩해서 불러도 됩니다.
+ * 업무 하나가 다른 업무를 통째로 쓰는 일이 흔한데(요청 승인 → 발주 생성),
+ * 안쪽에서 또 BEGIN 을 걸면 SQLite 가 거부합니다. 안쪽은 SAVEPOINT 로 받고,
+ * 커밋은 가장 바깥에서 한 번만 합니다.
+ */
+let txDepth = 0;
+
 export function tx(fn) {
-  db.exec("BEGIN IMMEDIATE");
+  const nested = txDepth > 0;
+  const name = `sp_${txDepth}`;
+  db.exec(nested ? `SAVEPOINT ${name}` : "BEGIN IMMEDIATE");
+  txDepth += 1;
   try {
     const result = fn();
-    db.exec("COMMIT");
+    txDepth -= 1;
+    db.exec(nested ? `RELEASE ${name}` : "COMMIT");
     return result;
   } catch (error) {
-    try { db.exec("ROLLBACK"); } catch { /* already rolled back */ }
+    txDepth -= 1;
+    try { db.exec(nested ? `ROLLBACK TO ${name}; RELEASE ${name}` : "ROLLBACK"); } catch { /* 이미 되돌려졌습니다 */ }
     throw error;
   }
 }
@@ -804,13 +871,18 @@ export function seedIfEmpty() {
         request.purpose, request.requestedDate, request.status, request.createdAt);
     }
 
+    // 시드 발주는 품목 하나짜리라 줄 1번으로 들어갑니다.
     for (const order of seed.purchaseOrders || []) {
       run(`INSERT OR IGNORE INTO purchase_orders
-           (id, supplier_id, project_id, product_id, quantity, received, unit_price, amount, due_date, status, approver, created_at)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
-        order.id, order.supplierId, order.projectId, order.productId,
-        order.quantity, order.received, Math.round(order.amount / order.quantity),
+           (id, supplier_id, line_count, quantity, received, amount, due_date, status, approver, created_at)
+           VALUES (?,?,1,?,?,?,?,?,?,?)`,
+        order.id, order.supplierId, order.quantity, order.received,
         order.amount, order.dueDate, order.status, order.approver, nowIso());
+      run(`INSERT OR IGNORE INTO purchase_order_lines
+           (id, order_id, line_no, product_id, project_id, quantity, received, unit_price, amount)
+           VALUES (?,?,1,?,?,?,?,?,?)`,
+        `${order.id}-01`, order.id, order.productId, order.projectId,
+        order.quantity, order.received, Math.round(order.amount / order.quantity), order.amount);
     }
 
     for (const order of seed.salesOrders || []) {
