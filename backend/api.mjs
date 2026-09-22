@@ -18,6 +18,7 @@ import {
 import { importPartners, reviewQueue, resolveProduct, retireProduct } from "./partners.mjs";
 import { fillStandardCatalog, standardCatalogSummary } from "./standard-catalog.mjs";
 import { leaveSummary, setQuota } from "./hr.mjs";
+import { fillPrices, priceCoverage } from "./price-fill.mjs";
 import { ingestSupplierCatalog, rowsFromCsv } from "./ingest.mjs";
 import { CATEGORIES, CATEGORY_TREE } from "./catalog.mjs";
 import { shopStatus, probe as g2bProbe, syncShoppingMall, SHOP_OPERATIONS } from "./g2b-shop.mjs";
@@ -1180,6 +1181,19 @@ export async function handleApi(request, response, url) {
   // 분류별 규격 필터 값 (종류·굵기·심선수 …)
   if (method === "GET" && /^\/api\/catalog\/facets\/[^/]+$/.test(path)) {
     return json(response, 200, specFacets(seg(url, 4)));
+  }
+
+  // 가격 채우기 — 카탈로그 제품 이름으로 판매 사이트를 훑어 가격을 답니다.
+  if (method === "GET" && path === "/api/catalog/prices") {
+    return json(response, 200, priceCoverage());
+  }
+  if (method === "POST" && path === "/api/catalog/prices/fill") {
+    requireRole(user, "master");
+    return json(response, 200, await fillPrices({
+      limit: Math.min(60, int(body.limit) || 20),
+      category: str(body.category) || "",
+      user: user.name,
+    }));
   }
 
   if (method === "GET" && path === "/api/catalog/standard") {
