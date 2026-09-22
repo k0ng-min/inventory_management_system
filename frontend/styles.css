@@ -534,7 +534,10 @@ button.metric:hover { border-color: var(--accent-line); box-shadow: var(--shadow
 
 .cal { border: 1px solid var(--line); border-radius: var(--r-card); overflow: hidden; background: var(--surface); }
 .cal-head { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); background: var(--surface-2); border-bottom: 1px solid var(--line); }
-.cal-head > div { padding: 12px 10px; font-size: 13px; font-weight: 600; color: var(--fg-2); text-align: center; }
+.cal-head > div {
+  padding: 11px 10px; font-size: 12px; font-weight: 600; color: var(--fg-3);
+  text-align: center; letter-spacing: .04em;
+}
 .cal-head > div:first-child { color: var(--danger); }
 .cal-head > div:last-child { color: var(--accent-deep); }
 .cal-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); }
@@ -730,33 +733,33 @@ html, body { overflow-x: hidden; }
 .sched-week-days { position: absolute; inset: 0; display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); }
 .sched-day {
   border: 0; border-right: 1px solid var(--line-soft); background: transparent;
-  padding: 6px 8px 0; text-align: left; cursor: pointer; font: inherit;
+  padding: 7px 9px 0; text-align: left; cursor: pointer; font: inherit;
   display: flex; align-items: flex-start; justify-content: space-between; gap: 4px;
 }
 .sched-day:nth-child(7) { border-right: 0; }
-.sched-day:hover { background: var(--surface-2); }
 .sched-day .n {
-  font-size: 13px; font-weight: 600; color: var(--fg-2);
-  font-variant-numeric: tabular-nums; line-height: 20px;
-  width: 24px; height: 20px; text-align: center; border-radius: 6px;
+  font-size: 13px; font-weight: 500; color: var(--fg-2);
+  font-variant-numeric: tabular-nums; line-height: 26px;
+  width: 26px; height: 26px; text-align: center; border-radius: 50%;
+  transition: background .12s, color .12s, box-shadow .12s;
 }
 .sched-day:nth-child(1) .n { color: var(--danger); }
 .sched-day:nth-child(7) .n { color: var(--accent-deep); }
-.sched-day.out { background: var(--surface-2); }
 .sched-day.out .n { color: #cbd5e1; }
-/* 오늘 · 선택한 날.
-   칸 전체에 2px 테두리를 두르면 일정 막대가 그 위를 가로지르며 테두리를 끊는다.
-   표시는 날짜 숫자에만 얹고, 칸에는 옅은 바탕만 깐다. */
-.sched-day.today .n { background: var(--accent); color: #fff; box-shadow: 0 1px 3px rgba(37, 99, 235, .35); }
-.sched-day.today { background: rgba(37, 99, 235, .05); }
-.sched-day.on { background: var(--accent-wash); }
-.sched-day.on .n { box-shadow: 0 0 0 2px var(--accent); }
-/* 오늘이면서 선택된 날은 채운 원 하나로 충분하다 — 고리를 겹쳐 두지 않는다. */
-.sched-day.on.today .n { box-shadow: 0 1px 3px rgba(37, 99, 235, .35); }
-.sched-day .more { font-size: 11px; color: var(--fg-3); line-height: 20px; }
+
+/* 오늘 · 선택한 날 —— 칸에는 색을 깔지 않는다.
+   일정 막대가 칸 위를 가로지르기 때문에, 칸을 칠하면 막대와 반드시 부딪힌다.
+   요즘 달력(구글 캘린더·노션)이 그렇듯 표시는 '날짜 숫자' 에만 얹는다. */
+.sched-day:hover .n { background: var(--surface-3); }
+.sched-day.on .n { box-shadow: inset 0 0 0 1.5px var(--accent); color: var(--accent-deep); font-weight: 700; }
+.sched-day.today .n { background: var(--accent); color: #fff; font-weight: 700; box-shadow: none; }
+.sched-day.today:hover .n { background: var(--accent-deep); }
+/* 오늘이면서 선택된 날은 채운 원 하나로 끝낸다 — 고리를 겹쳐 두지 않는다. */
+.sched-day.on.today .n { box-shadow: none; color: #fff; }
+.sched-day .more { font-size: 11px; color: var(--fg-3); line-height: 26px; }
 
 /* 막대층은 날짜 숫자 아래에서 시작하고, 클릭은 막대에만 걸립니다. */
-.sched-week-bars { position: absolute; left: 0; right: 0; top: 32px; bottom: 0; pointer-events: none; }
+.sched-week-bars { position: absolute; left: 0; right: 0; top: 38px; bottom: 0; pointer-events: none; }
 .sched-bar {
   position: absolute; height: 23px; border-radius: 6px; pointer-events: auto;
   border: 0; cursor: pointer; padding: 0 9px; font: inherit; font-size: 12.5px; line-height: 23px;
