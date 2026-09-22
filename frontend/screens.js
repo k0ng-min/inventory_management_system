@@ -1173,6 +1173,55 @@ const SORTS = [
 const ICON_SEARCH = `<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor"
   stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>`;
 
+/**
+ * 지난 구매가 대비 현재가 변동.
+ * 전기자재는 같은 물건을 반복해서 사기 때문에, "지난번보다 올랐는지" 가
+ * 단가 자체보다 먼저 눈에 들어와야 합니다.
+ */
+function priceDelta(current, previous) {
+  if (current === null || current === undefined || !previous) return null;
+  const diff = Math.round(current - previous);
+  if (!diff) return { text: "동일", tone: "same", diff: 0, rate: 0 };
+  const rate = Math.round((diff / previous) * 1000) / 10;
+  return {
+    diff,
+    rate,
+    tone: diff > 0 ? "up" : "down",
+    text: `${diff > 0 ? "+" : "−"}${fmt.int(Math.abs(diff))}원 · ${diff > 0 ? "+" : "−"}${Math.abs(rate)}%`,
+  };
+}
+
+/** 과거 구매 이력 블록 — 현재가 / 지난 구매가 / 변동 / 구매일 / 구매처 */
+function lastBuyBlock(product, lastPurchase, trend) {
+  if (!lastPurchase) {
+    return h("div.buy-hist.empty", {},
+      h("span.muted", { text: "이 제품은 아직 구매 기록이 없습니다. 첫 구매 후부터 지난 구매가가 여기에 남습니다." }));
+  }
+  const current = product.best_unit_price ?? null;
+  const previous = Math.round(lastPurchase.unit_price * 100) / 100;
+  const delta = priceDelta(current, previous);
+  const cell = (label, value, cls = "") => h(`div.bh-cell${cls}`, {},
+    h("span", { text: label }), h("b", { text: value }));
+
+  return h("div.buy-hist", {},
+    h("div.bh-figs", {},
+      cell("현재가격", current === null ? "미등록" : `${fmt.int(Math.round(current))}원`),
+      cell("지난 구매가격", `${fmt.int(Math.round(previous))}원`),
+      delta
+        ? h(`div.bh-cell.bh-${delta.tone}`, {},
+          h("span", { text: "가격변동" }), h("b", { text: delta.text }))
+        : null,
+      cell("마지막 구매", fmt.date(lastPurchase.at)),
+      cell("구매처", lastPurchase.supplier_name || "-")),
+    trend && trend.length > 1
+      ? h("div.bh-trend", {},
+        h("div.bh-trend-head", {},
+          h("b", { text: `가격 추이 ${trend.length}건` }),
+          h("span.muted", { text: `환산단가 기준 · 원/${product.base_unit}` })),
+        spark(trend.map((row) => Math.round(row.unit_price)), trend.map((row) => row.at)))
+      : null);
+}
+
 /** 규격을 칩으로 보여 줍니다. 검색어가 어떻게 해석됐는지 드러내기 위한 것입니다. */
 const specChips = (categories, category, specs) => {
   const definition = categories?.[category];
@@ -1248,12 +1297,7 @@ function catalogSearch() {
               }, run),
             }, "구매요청")
             : null))))),
-      detail.lastPurchase
-        ? h("div.last-buy", {},
-          h("b", {}, "지난 구매"),
-          h("span", { text: `${fmt.date(detail.lastPurchase.at)} · ${detail.lastPurchase.supplier_name || "-"} · ${fmt.won(detail.lastPurchase.price)}` }),
-          h("span.muted", { text: ` (환산 ${fmt.int(Math.round(detail.lastPurchase.unit_price))}원/${product.base_unit})` }))
-        : null);
+      lastBuyBlock(product, detail.lastPurchase, detail.trend));
   }
 
   async function toggle(product, host) {
@@ -1313,6 +1357,18 @@ function catalogSearch() {
           h("div.fig", {},
             h("span", {}, "최단 납기"),
             h("b", { text: product.best_lead === null ? "-" : product.best_lead === 0 ? "당일" : `${product.best_lead}일` })),
+          (() => {
+            // 지난 구매가는 펼치지 않고도 보여야 합니다 — 반복 구매가 잦기 때문입니다.
+            const delta = priceDelta(product.best_unit_price ?? null, product.last_buy_unit_price);
+            return h("div.fig", {},
+              h("span", {}, "지난 구매"),
+              h(`b${product.last_buy_unit_price ? "" : ".dim"}`, {
+                text: product.last_buy_unit_price ? `${fmt.int(Math.round(product.last_buy_unit_price))}원` : "없음",
+              }),
+              delta
+                ? h(`small.bh-tag.bh-${delta.tone}`, { text: delta.text, title: `${fmt.date(product.last_buy_at)} · ${product.last_buy_supplier || "-"}` })
+                : h("small", { text: product.last_buy_at ? fmt.date(product.last_buy_at) : " " }));
+          })(),
           h("div.fig", {},
             h("span", {}, "사내 재고"),
             h(`b${product.available <= 0 ? ".dim" : ""}`, { text: fmt.int(product.on_hand) }),
@@ -3244,29 +3300,29 @@ export const MODULES = [
     ],
   },
   {
-    id: "sales", name: "영업", need: "finance", groups: [
+    id: "sales", name: "영업", groups: [
       { name: "영업관리", items: [["sal.order", "매출등록"], ["sal.payment", "수금관리"], ["sal.status", "매출현황"]] },
       { name: "기준정보", items: [["base.customer", "고객등록"]] },
     ],
   },
   {
     id: "project", name: "공사", groups: [
-      { name: "공사관리", items: [["base.project", "공사등록"], ["prj.cost", "공사별 원가", "finance"], ["prj.receipt", "작업별 영수증", "finance"], ["inv.allocation", "공사별 자재배정"]] },
+      { name: "공사관리", items: [["base.project", "공사등록"], ["prj.cost", "공사별 원가"], ["prj.receipt", "작업별 영수증"], ["inv.allocation", "공사별 자재배정"]] },
     ],
   },
   {
-    id: "accounting", name: "회계", need: "admin", groups: [
+    id: "accounting", name: "회계", groups: [
       { name: "회계관리", items: [["acc.ledger", "전표 입력·조회"], ["acc.fund", "자금현황"]] },
     ],
   },
   {
-    id: "bid", name: "입찰", need: "admin", groups: [
+    id: "bid", name: "입찰", groups: [
       { name: "나라장터", items: [["bid.calendar", "입찰 캘린더"], ["bid.list", "입찰공고 조회"], ["bid.star", "관심공고"]] },
     ],
   },
   {
-    id: "report", name: "분석", need: "admin", groups: [
-      { name: "경영분석", items: [["rpt.purchase", "구매분석", "finance"], ["rpt.inventory", "재고분석"], ["prj.cost", "공사수익", "finance"]] },
+    id: "report", name: "분석", groups: [
+      { name: "경영분석", items: [["rpt.purchase", "구매분석"], ["rpt.inventory", "재고분석"], ["prj.cost", "공사수익"]] },
     ],
   },
   {

@@ -56,7 +56,7 @@ async function readBody(request) {
 const publicUser = (user) => user && ({
   id: user.id, name: user.name, email: user.email,
   role: user.role, active: Boolean(user.active), createdAt: user.created_at,
-  scope: { finance: user.role === "admin", prices: ["admin", "purchasing"].includes(user.role) },
+  scope: { finance: canFinance(user), prices: canPrices(user) },
 });
 
 function currentUser(request) {
@@ -78,34 +78,33 @@ function createSession(response, user) {
 /* permissions                                                         */
 /* ------------------------------------------------------------------ */
 
+/**
+ * 직원 5명 회사라 업무는 서로 대신 처리합니다. 쓰기 권한은 '직원이냐 아니냐'로만
+ * 가르고, 조회 전용 계정만 빼냅니다. 시스템 설정은 사장(관리자) 몫입니다.
+ */
+const STAFF = ["admin", "purchasing", "warehouse"];
+
 const ROLE_WRITE = {
-  master: ["admin", "purchasing"],      // 품목·거래처·고객·공사·창고
-  purchasing: ["admin", "purchasing"],  // 구매요청·발주
-  warehouse: ["admin", "warehouse"],    // 입고·재고이동·조정·배정·출고
-  sales: ["admin"],                     // 매출·수금 — 금액이라 관리자만
-  accounting: ["admin"],                // 전표
-  bids: ["admin"],                      // 입찰 — 관리자 전용
-  system: ["admin"],                    // 사용자·연동·회사정보
-  schedule: ["admin", "purchasing", "warehouse"],  // 팀 일정 — 조회 전용만 제외
+  master: STAFF,       // 품목·거래처·고객·공사·창고
+  purchasing: STAFF,   // 구매요청·발주
+  warehouse: STAFF,    // 입고·재고이동·조정·배정·출고
+  sales: STAFF,        // 매출·수금
+  accounting: STAFF,   // 전표
+  bids: STAFF,         // 입찰
+  system: ["admin"],   // 사용자·연동·회사정보 — 관리자 전용
+  schedule: STAFF,     // 팀 일정
 };
 
 /**
- * 금액 열람은 두 단계로 나눕니다.
- *  finance — 경영·회계 집계(매출, 미수금, 재고자산, 손익). 관리자 전용.
- *  prices  — 업무 수행에 필요한 단가·발주금액. 구매 담당까지 허용.
- * 화면에서 가리는 것과 별개로, 서버가 응답 자체에서 금액을 지웁니다.
+ * 금액 열람.
+ * 구매 판단에 과거 구매가와 단가가 필요하고(요구사항 9), 5명 회사에서 금액을
+ * 서로 가리면 업무가 막힙니다. 로그인한 사람은 모두 봅니다.
+ * 나중에 사람이 늘어 가려야 하면 이 두 함수만 고치면 서버 응답까지 함께 막힙니다.
  */
-const canFinance = (user) => user.role === "admin";
-const canPrices = (user) => ["admin", "purchasing"].includes(user.role);
+const canFinance = () => true;
+const canPrices = () => true;
 
-const requireFinance = (user) => {
-  if (!canFinance(user)) forbidden("경영·회계 금액은 관리자만 조회할 수 있습니다.");
-};
-
-/** 입찰·회계·분석은 모듈 통째로 관리자 전용입니다. 화면을 가리는 것과 별개로 여기서 막습니다. */
-const requireAdmin = (user, what) => {
-  if (user.role !== "admin") forbidden(`${what}은(는) 관리자만 볼 수 있습니다.`);
-};
+const requireFinance = () => {};
 
 /** 객체(또는 배열)에서 지정한 금액 필드를 제거합니다. */
 function stripMoney(payload, fields) {
@@ -546,6 +545,32 @@ function cancelOrder(id, user) {
   return get(`${PO_SQL} WHERE o.id = ?`, id);
 }
 
+/**
+ * 실제로 산 가격을 가격이력에 남깁니다.
+ * 요구사항: "모든 구매가격은 기록한다" — 다음 구매 때 "지난번에 얼마였나"에
+ * 즉시 답하기 위한 자산입니다. 적재·견적과 구분하려고 ref_type 을 'PO' 로 둡니다.
+ *
+ * 사내 품목이 정규화 카탈로그에 연결돼 있어야 제품 단위로 비교됩니다.
+ * 연결이 없으면(직접 등록한 품목) 조용히 건너뜁니다 — 입고 자체를 막을 일은 아닙니다.
+ */
+function recordPurchasePrice(order, at, userName) {
+  const product = get("SELECT catalog_product_id FROM products WHERE id = ?", order.product_id);
+  const catalogId = product?.catalog_product_id;
+  if (!catalogId || !order.unit_price) return;
+
+  // 발주가 어떤 판매조건에서 나왔으면 그 판매단위를, 아니면 기본단위 1개로 환산합니다.
+  const offer = order.supplier_product_id
+    ? get("SELECT sell_unit, unit_qty FROM supplier_products WHERE id = ?", order.supplier_product_id)
+    : null;
+  const unitQty = offer?.unit_qty && offer.unit_qty > 0 ? offer.unit_qty : 1;
+
+  run(`INSERT INTO price_history
+         (product_id, supplier_id, price, unit_price, sell_unit, unit_qty, at, source, ref_type, ref_id, user)
+       VALUES (?,?,?,?,?,?,?, 'purchase', 'PO', ?, ?)`,
+    catalogId, order.supplier_id, order.unit_price, order.unit_price / unitQty,
+    offer?.sell_unit || null, unitQty, at, order.id, userName);
+}
+
 /** 입고: 발주 수량 갱신 + 재고 증가 + 트랜잭션 기록 + 매입전표까지 한 번에. */
 function receiveOrder(id, body, user) {
   requireRole(user, "warehouse");
@@ -584,6 +609,8 @@ function receiveOrder(id, body, user) {
          VALUES (?,?,?,?,?,?,?,?)`,
       receiptId, id, warehouseId, order.product_id, quantity,
       str(body.receivedAt) || today(), user.name, str(body.note));
+
+    recordPurchasePrice(order, str(body.receivedAt) || today(), user.name);
 
     // 매입 전표 자동 기표
     const supplier = get("SELECT name FROM suppliers WHERE id = ?", order.supplier_id);
@@ -935,7 +962,6 @@ export async function handleApi(request, response, url) {
     return json(response, 200, canFinance(user) ? data : stripMoney(data, SUMMARY_MONEY));
   }
   if (method === "GET" && path === "/api/reports") {
-    requireAdmin(user, "경영분석");
     const data = reports(url);
     if (canFinance(user)) return json(response, 200, data);
     // 금액이 들어간 분석은 통째로 빼고, 수량 기반 분석만 돌려줍니다.
@@ -1060,7 +1086,7 @@ export async function handleApi(request, response, url) {
     const from = url.searchParams.get("from");
     const to = url.searchParams.get("to");
     if (!from || !to) bad("조회 기간(from·to)이 필요합니다.");
-    return json(response, 200, calendarFeed({ from, to, isAdmin: user.role === "admin" }));
+    return json(response, 200, calendarFeed({ from, to, isAdmin: true }));
   }
 
   if (method === "POST" && path === "/api/schedules") {
@@ -1111,8 +1137,8 @@ export async function handleApi(request, response, url) {
     return json(response, 200, detail);
   }
 
+  // 업체별 단가는 조회입니다. 쓰기 권한과 묶지 않습니다.
   if (method === "GET" && /^\/api\/catalog\/products\/[^/]+\/offers$/.test(path)) {
-    requireRole(user, "purchasing");
     return json(response, 200, offersFor(seg(url, 4)));
   }
 
@@ -1380,7 +1406,6 @@ export async function handleApi(request, response, url) {
 
   /* ---- 입찰정보 ---- */
   if (path.startsWith("/api/bids")) {
-    requireAdmin(user, "입찰");
     if (method === "GET" && path === "/api/bids/status") {
       return json(response, 200, { ...bidStatus(), kinds: BID_KINDS.map((item) => item.key) });
     }

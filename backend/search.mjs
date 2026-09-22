@@ -18,6 +18,13 @@ function categoryFromWord(text) {
   return null;
 }
 
+/**
+ * 그 제품을 가장 최근에 '실제로 구매한'(발주 기표된) 값 한 칸.
+ * 지난 구매가는 검색 결과 행에서 바로 보여야 하므로 목록 쿼리에 함께 싣습니다.
+ */
+const lastBuy = (column) => `(SELECT h.${column} FROM price_history h
+   WHERE h.product_id = c.id AND h.ref_type = 'PO' ORDER BY h.id DESC LIMIT 1)`;
+
 const PRODUCT_SQL = `
   SELECT c.*,
          (SELECT COUNT(*) FROM supplier_products WHERE product_id = c.id AND active = 1) AS supplier_count,
@@ -29,7 +36,12 @@ const PRODUCT_SQL = `
                     JOIN products p ON p.id = b.product_id WHERE p.catalog_product_id = c.id), 0) AS available,
          (SELECT group_concat(COALESCE(sp.raw_name,'') || ' ' || COALESCE(s.name,''), ' ')
             FROM supplier_products sp LEFT JOIN suppliers s ON s.id = sp.supplier_id
-           WHERE sp.product_id = c.id) AS supplier_blob
+           WHERE sp.product_id = c.id) AS supplier_blob,
+         ${lastBuy("unit_price")} AS last_buy_unit_price,
+         ${lastBuy("price")}      AS last_buy_price,
+         ${lastBuy("at")}         AS last_buy_at,
+         (SELECT s.name FROM price_history h LEFT JOIN suppliers s ON s.id = h.supplier_id
+           WHERE h.product_id = c.id AND h.ref_type = 'PO' ORDER BY h.id DESC LIMIT 1) AS last_buy_supplier
   FROM catalog_products c
   WHERE c.active = 1`;
 
@@ -114,6 +126,7 @@ export function searchProducts({ query = "", category = "", sort = "match", limi
     specs: JSON.parse(row.specs || "{}"),
     match: wordCategory ? 100 : matchScore(parsed, row),
     best_unit_price: row.best_unit_price === null ? null : Math.round(row.best_unit_price * 100) / 100,
+    last_buy_unit_price: row.last_buy_unit_price === null ? null : Math.round(row.last_buy_unit_price * 100) / 100,
   })).filter((row) => row.match > 0 || !query || Boolean(wordCategory));
 
   const compare = {

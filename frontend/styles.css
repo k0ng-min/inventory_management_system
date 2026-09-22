@@ -1096,6 +1096,31 @@ table.offer tbody tr:hover td { background: var(--surface-3); }
 }
 .last-buy b { color: var(--fg); font-weight: 600; }
 
+/* ---- 과거 구매가 · 가격 추이 ----
+   같은 물건을 반복해서 사는 업종이라, 지난 구매가가 단가만큼 중요합니다. */
+.buy-hist { border-top: 1px dashed var(--surface-4); padding: 14px 16px; }
+.buy-hist.empty { font-size: 14px; }
+.bh-figs { display: flex; flex-wrap: wrap; gap: 26px; }
+.bh-cell { display: flex; flex-direction: column; gap: 3px; }
+.bh-cell > span { font-size: 12px; color: var(--fg-3); }
+.bh-cell > b { font-size: 15px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.bh-cell.bh-up > b { color: var(--danger); }
+.bh-cell.bh-down > b { color: var(--ok); }
+.bh-cell.bh-same > b { color: var(--fg-3); }
+
+.bh-tag {
+  display: inline-block; padding: 1px 6px; border-radius: 999px;
+  font-size: 11px; font-weight: 600; font-variant-numeric: tabular-nums;
+}
+.bh-tag.bh-up { background: var(--danger-wash); color: var(--danger); }
+.bh-tag.bh-down { background: var(--ok-wash); color: var(--ok); }
+.bh-tag.bh-same { background: var(--surface-3); color: var(--fg-3); }
+
+.bh-trend { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--line-soft); }
+.bh-trend-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 8px; }
+.bh-trend-head b { font-size: 13px; font-weight: 600; }
+.bh-trend-head .muted { font-size: 12px; }
+
 /* ---- 적재 도움말 ---- */
 .hdr-help {
   background: var(--surface-2); border: 1px solid var(--line); border-radius: var(--r-md);

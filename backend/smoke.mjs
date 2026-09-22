@@ -215,7 +215,10 @@ async function main() {
   check("전표 등록", entry.status === 201, JSON.stringify(entry.body));
   check("전표 수정", (await as("PUT", `/api/accounting-entries/${entry.body.id}`, { status: "승인" })).body.status === "승인");
   check("전표 삭제", (await as("DELETE", `/api/accounting-entries/${entry.body.id}`)).status === 200);
-  check("전표 권한 제한", (await asWarehouse("POST", "/api/accounting-entries", { date: "2026-09-21", type: "경비" })).status === 403);
+  check("직원도 전표 등록", (await asWarehouse("POST", "/api/accounting-entries", {
+    date: "2026-09-21", type: "경비", account: "소모품비", debit: 10_000,
+  })).status === 201);
+  check("조회전용은 전표 차단", (await asViewer("POST", "/api/accounting-entries", { date: "2026-09-21", type: "경비" })).status === 403);
 
   console.log("\n입찰정보 (나라장터)");
   const bidStatus = await as("GET", "/api/bids/status");
@@ -327,6 +330,24 @@ async function main() {
   check("카탈로그에 사내재고 연결", stockedCv.body.products[0]?.on_hand === 2
     && stockedCv.body.products[0]?.available === 2, JSON.stringify(stockedCv.body.products[0]));
 
+  // 과거 구매가 — "지난번에 얼마에 샀는가". 입고 시점에 실제 구매가가 남아야 합니다.
+  const bought = stockedCv.body.products[0];
+  check("입고가 지난 구매가로 남음", bought?.last_buy_price === selectedOffer.price,
+    JSON.stringify({ last: bought?.last_buy_price, paid: selectedOffer.price }));
+  check("지난 구매가 환산단가", bought?.last_buy_unit_price === Math.round((selectedOffer.price / selectedOffer.unit_qty) * 100) / 100,
+    String(bought?.last_buy_unit_price));
+  check("지난 구매처가 검색 행에 실림", bought?.last_buy_supplier === selectedOffer.supplier_name,
+    `${bought?.last_buy_supplier} / ${selectedOffer.supplier_name}`);
+  check("지난 구매일이 입고일", String(bought?.last_buy_at).slice(0, 10) === "2026-09-22", String(bought?.last_buy_at));
+
+  const buyDetail = await as("GET", `/api/catalog/products/${cv.id}`);
+  check("상세의 지난 구매가 = 실제 구매", buyDetail.body.lastPurchase?.ref_id === comparedOrder.body.order.id,
+    JSON.stringify(buyDetail.body.lastPurchase));
+  check("가격 추이에 구매 기록 포함",
+    buyDetail.body.trend.some((row) => row.source === "purchase"), JSON.stringify(buyDetail.body.trend));
+  check("조회전용도 지난 구매가를 봄",
+    (await asViewer("GET", "/api/catalog/search?q=CV%202.5%204C")).body.products[0]?.last_buy_price === selectedOffer.price);
+
   // 값을 올리면 이력이 쌓이고 급등으로 잡혀야 합니다.
   await as("POST", "/api/catalog/import", {
     supplierId: supplier.body.id, csv: "품명,단위,단가\nCV 2.5SQ 4C 0.6/1kV,100m,99000", filename: "smoke-a2.csv",
@@ -369,8 +390,8 @@ async function main() {
       result.status === 200 && result.body.ok === false && Boolean(result.body.reason),
       JSON.stringify(result.body));
   }
-  check("창고담당 자재몰 수집 차단",
-    (await asWarehouse("POST", "/api/catalog/mall/sync", { categoryNo: "54" })).status === 403);
+  check("조회전용 자재몰 수집 차단",
+    (await asViewer("POST", "/api/catalog/mall/sync", { categoryNo: "54" })).status === 403);
 
   // 가격을 공개하지 않는 몰에서 거둔 품명은 판매조건 없이 품목만 만들어야 합니다.
   const nameOnlyCsv = "품명\nHFIX 6SQ 전화문의품\n";
@@ -398,16 +419,17 @@ async function main() {
     added.length === 1 && added[0].supplier_count === 0, JSON.stringify(added));
 
   console.log("\n카탈로그 권한");
-  check("창고담당 적재 차단",
-    (await asWarehouse("POST", "/api/catalog/import", { supplierId: supplier.body.id, csv: csvA })).status === 403);
+  check("조회전용 적재 차단",
+    (await asViewer("POST", "/api/catalog/import", { supplierId: supplier.body.id, csv: csvA })).status === 403);
   const viewerSearch = await asViewer("GET", "/api/catalog/search?q=CV%202.5%204C");
   check("조회전용도 검색은 가능", viewerSearch.status === 200 && viewerSearch.body.products.length >= 1);
-  check("조회전용에겐 단가 없음", viewerSearch.body.products.every((row) => row.best_unit_price === undefined),
+  check("조회전용도 단가를 봄", viewerSearch.body.products.some((row) => row.best_unit_price !== undefined),
     JSON.stringify(viewerSearch.body.products[0]));
-  check("조회전용 상세에 단가 숨김",
-    (await asViewer("GET", `/api/catalog/products/${cv.id}`)).body.pricesHidden === true);
-  check("조회전용 업체비교 차단", (await asViewer("GET", `/api/catalog/products/${cv.id}/offers`)).status === 403);
-  check("창고담당 가격추이 차단", (await asWarehouse("GET", `/api/catalog/products/${cv.id}/trend`)).status === 403);
+  check("조회전용 상세에 단가 보임",
+    (await asViewer("GET", `/api/catalog/products/${cv.id}`)).body.pricesHidden === undefined);
+  check("조회전용 업체비교 허용", (await asViewer("GET", `/api/catalog/products/${cv.id}/offers`)).status === 200);
+  check("창고담당 가격추이 허용", (await asWarehouse("GET", `/api/catalog/products/${cv.id}/trend`)).status === 200);
+  check("창고담당 가격급등 조회", (await asWarehouse("GET", "/api/catalog/price-alerts")).status === 200);
 
   console.log("\n관리자");
   const users = (await as("GET", "/api/admin/users")).body;
@@ -429,21 +451,25 @@ async function main() {
   check("감사로그 누적", logs.body.length > 10, `${logs.body.length}건`);
   check("삭제 제약 동작", (await as("DELETE", "/api/products/MAT-SMOKE-01")).status === 400);
 
-  console.log("\n관리자 전용 모듈 (입찰·회계·분석)");
-  // 화면에서 가리는 것과 별개로, 주소창으로 직접 열어도 막혀야 합니다.
+  console.log("\n권한 — 업무는 전원 개방, 시스템 설정만 관리자");
+  // 5명 회사라 업무 화면과 금액은 서로 대신 봅니다. 막는 것은 시스템 설정뿐입니다.
   for (const [label, path] of [
     ["입찰 목록", "/api/bids"],
     ["입찰 캘린더", "/api/bids/calendar?from=2026-01-01&to=2026-12-31"],
     ["입찰 상태", "/api/bids/status"],
     ["경영분석", "/api/reports"],
+    ["매출 목록", "/api/sales-orders"],
+    ["수금 목록", "/api/payments"],
   ]) {
-    check(`구매담당 ${label} 차단`, (await asPurchasing("GET", path)).status === 403);
-    check(`창고담당 ${label} 차단`, (await asWarehouse("GET", path)).status === 403);
-    check(`조회전용 ${label} 차단`, (await asViewer("GET", path)).status === 403);
-    check(`관리자 ${label} 허용`, (await as("GET", path)).status === 200);
+    for (const [who, call] of [["관리자", as], ["구매담당", asPurchasing], ["창고담당", asWarehouse], ["조회전용", asViewer]]) {
+      check(`${who} ${label} 허용`, (await call("GET", path)).status === 200);
+    }
   }
-  check("구매담당 입찰 동기화 차단", (await asPurchasing("POST", "/api/bids/sync", {})).status === 403);
-  check("회계 전표는 이미 관리자 전용", (await asPurchasing("GET", "/api/accounting-entries")).status === 403);
+  check("구매담당 입찰 동기화 허용", (await asPurchasing("POST", "/api/bids/sync", {})).status === 200);
+  check("조회전용 입찰 동기화 차단", (await asViewer("POST", "/api/bids/sync", {})).status === 403);
+  check("직원은 사용자 관리 차단", (await asPurchasing("GET", "/api/admin/users")).status === 403);
+  check("직원은 회사정보 수정 차단",
+    (await asPurchasing("PUT", "/api/admin/organization", { name: "x" })).status === 403);
 
   console.log("\n팀 공유 일정");
   const mk = (over = {}) => ({
@@ -495,8 +521,8 @@ async function main() {
   check("달력 피드 조회", cal.status === 200 && Array.isArray(cal.body.schedules) && Array.isArray(cal.body.projects),
     JSON.stringify(Object.keys(cal.body)));
   check("달력 기간 없으면 거부", (await as("GET", "/api/calendar")).status === 400);
-  check("비관리자 달력엔 입찰이 비어 있음",
-    (await asWarehouse("GET", "/api/calendar?from=2026-10-01&to=2026-10-31")).body.bids.length === 0);
+  check("직원 달력에도 입찰 마감이 실림",
+    Array.isArray((await asWarehouse("GET", "/api/calendar?from=2026-10-01&to=2026-10-31")).body.bids));
 
   check("일정 삭제", (await asWarehouse("DELETE", `/api/schedules/${leave.body.id}`)).status === 200);
   check("삭제 후 조회되지 않음",
