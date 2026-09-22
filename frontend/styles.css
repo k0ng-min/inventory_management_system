@@ -744,9 +744,15 @@ html, body { overflow-x: hidden; }
 .sched-day:nth-child(7) .n { color: var(--accent-deep); }
 .sched-day.out { background: var(--surface-2); }
 .sched-day.out .n { color: #cbd5e1; }
+/* 오늘 · 선택한 날.
+   칸 전체에 2px 테두리를 두르면 일정 막대가 그 위를 가로지르며 테두리를 끊는다.
+   표시는 날짜 숫자에만 얹고, 칸에는 옅은 바탕만 깐다. */
 .sched-day.today .n { background: var(--accent); color: #fff; box-shadow: 0 1px 3px rgba(37, 99, 235, .35); }
-.sched-day.today { background: var(--accent-wash); }
-.sched-day.on { box-shadow: inset 0 0 0 2px var(--accent); background: var(--accent-wash); }
+.sched-day.today { background: rgba(37, 99, 235, .05); }
+.sched-day.on { background: var(--accent-wash); }
+.sched-day.on .n { box-shadow: 0 0 0 2px var(--accent); }
+/* 오늘이면서 선택된 날은 채운 원 하나로 충분하다 — 고리를 겹쳐 두지 않는다. */
+.sched-day.on.today .n { box-shadow: 0 1px 3px rgba(37, 99, 235, .35); }
 .sched-day .more { font-size: 11px; color: var(--fg-3); line-height: 20px; }
 
 /* 막대층은 날짜 숫자 아래에서 시작하고, 클릭은 막대에만 걸립니다. */
